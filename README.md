@@ -22,7 +22,11 @@ A Streamlit web application designed for medical professionals. It facilitates t
 
 *   **Python:** Version 3.8 or newer. The setup script checks for this.
 *   **pip:** Python package installer.
-*   **FFmpeg:** Required for audio format handling. The setup script can attempt to download and install it if `ffmpeg-installer.bat` is present, or you can install it manually from [https://ffmpeg.org/download.html](https://ffmpeg.org/download.html) and ensure it's accessible or placed in the `ffmpeg` directory.
+*   **FFmpeg:** Required for audio format handling. 
+    - Download from [GitHub Codex FFmpeg Release](https://github.com/GyanD/codexffmpeg/releases/tag/2025-04-14-git-3b2a9410ef)
+    - Download the appropriate zip file for your system (e.g., `ffmpeg-2025-04-14-git-3b2a9410ef-essentials_build.zip`)
+    - Extract the contents to a folder named `ffmpeg` in the project root directory
+    - Ensure that the path `ffmpeg\bin\ffmpeg.exe` exists after extraction
 *   **(Optional) Ollama:** Required if using non-GPT local LLMs. Needs to be installed and running separately. [Link to Ollama setup guide if available]
 *   **(Optional) Vosk Models:** Required for Vosk transcription. The setup script can download a small English model (`vosk-model-small-en-us-0.15`) automatically. You can download other models from [https://alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) and place them in the `app_data/models/` directory (e.g., `app_data/models/vosk-model-en-us-0.22`).
 *   **(Optional) Local Whisper Models:** Required for local Whisper transcription. Download model files (e.g., `tiny.pt`, `base.pt`) and place them in `app_data/whisper_models/`.
@@ -55,6 +59,81 @@ The `setup.bat` script automates most of the setup process.
     *   Attempt to launch the application (`streamlit run app.py`).
 
     *Note:* If `setup.bat` fails during dependency installation (e.g., PyAudio), you might need to install system prerequisites manually (like PortAudio) or use alternative installation methods mentioned in the script's output.
+
+## Batch Scripts for Windows Users
+
+This repository includes two batch scripts for Windows users to simplify setup and execution:
+
+### `setup.bat`
+
+A comprehensive setup script that:
+- Requests administrator privileges if needed
+- Verifies Python 3.8+ is installed
+- Creates and configures a Python virtual environment
+- Installs all dependencies from requirements.txt
+- Sets up directories for the application
+- Offers to download and configure FFmpeg if needed
+- Offers to download a basic Vosk model if none are present
+- Creates a template .env file if one doesn't exist
+- Launches the application for first-time setup
+
+To use:
+```bash
+setup.bat
+```
+
+### `Start_app.bat`
+
+A streamlined script to start the application that:
+- Checks if the Ollama service is running (if you're using local models)
+- Updates local model information
+- Starts the Ollama API bridge in a separate terminal
+- Launches the main application
+
+To use:
+```bash
+Start_app.bat
+```
+
+### Manual Setup (Non-Windows Users)
+
+If you're not using Windows or prefer manual setup:
+
+1. Create and activate a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Linux/macOS
+   ```
+
+2. Install required packages:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Create necessary directories:
+   ```bash
+   mkdir -p app_data/models app_data/keys app_data/logs app_data/cache app_data/notes local_llm_models
+   ```
+
+4. Install FFmpeg manually from https://ffmpeg.org/download.html
+
+5. Download a Vosk model (optional):
+   - Download from https://alphacephei.com/vosk/models
+   - Extract to app_data/models directory
+
+6. Create a .env file with your configuration
+
+7. Start Ollama service (if using)
+
+8. Run the Ollama bridge:
+   ```bash
+   python ollama_bridge.py
+   ```
+
+9. In a separate terminal, run the app:
+   ```bash
+   streamlit run app.py
+   ```
 
 ## Configuration
 

@@ -8,6 +8,9 @@
 !requirements.txt
 !app.py
 !ollama_bridge.py
+!setup.bat
+!Start_app.bat
+!models_map.py
 
 # And not this directory and its contents
 !src/
@@ -17,6 +20,8 @@
 **/__pycache__/
 **/*.py[cod]
 **/*.so
+**/Original_app.py
+**/*.zip
 
 # Environment variables & secrets
 .env
