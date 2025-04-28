@@ -11,6 +11,7 @@
 !setup.bat
 !Start_app.bat
 !models_map.py
+!torch_streamlit_patch.py
 
 # And not this directory and its contents
 !src/
