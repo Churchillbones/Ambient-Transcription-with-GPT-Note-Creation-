@@ -7,10 +7,111 @@ import streamlit as st
 from .config import config, logger
 from .utils import sanitize_input
 from .token_management import (
-    count_tokens, 
-    generate_note_from_chunked_transcript, 
+    count_tokens,
+    generate_note_from_chunked_transcript,
     generate_note_with_two_stage_summarization
 )
+from .llm_agent_enhanced import generate_note_agent_based as perform_agent_generation
+# Ensure this is placed with other . (relative) imports
+
+
+async def generate_note_router(
+    transcript: str,
+    api_key: Optional[str] = None,
+    azure_endpoint: Optional[str] = None,
+    azure_api_version: Optional[str] = None,
+    azure_model_name: Optional[str] = None,
+    prompt_template: str = "",
+    use_local: bool = False, # For traditional local model path
+    local_model: str = "",   # For traditional local model path
+    patient_data: Optional[Dict] = None,
+    use_agent_pipeline: bool = False, # Flag from UI to enable agent pipeline
+    agent_settings: Optional[Dict[str, Any]] = None,  # Settings for the agent pipeline from UI
+    progress_callback: Optional[Any] = None # Pass progress_callback for agent pipeline UI updates
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Routes note generation to either the traditional pipeline or the new agent-based pipeline.
+    The agent-based pipeline is used if 'use_agent_pipeline' is True and not 'use_local'.
+    Fallback to traditional if agent pipeline fails.
+    """
+    logger.info(f"generate_note_router called. use_agent_pipeline: {use_agent_pipeline}, use_local: {use_local}")
+
+    # Metadata to be returned along with the note
+    metadata_result: Dict[str, Any] = {
+        "pipeline_type_attempted": "agent" if use_agent_pipeline and not use_local else "traditional",
+        "agent_based_processing_used": False, # Default to false, set true if agent pipeline runs
+        "fallback_triggered": False,
+        "fallback_reason": None
+    }
+
+    if use_agent_pipeline and not use_local:
+        logger.info("Attempting agent-based note generation.")
+        if not api_key or not azure_endpoint or not azure_api_version or not azure_model_name:
+            logger.error("Agent pipeline selected, but Azure credentials or model name are missing.")
+            metadata_result["fallback_triggered"] = True
+            metadata_result["fallback_reason"] = "Missing Azure credentials or model name for agent pipeline."
+            # Proceed to fallback section by not returning here
+        else:
+            try:
+                # Call the core agent generation function from llm_agent_enhanced.py
+                note_text, agent_metadata = await perform_agent_generation(
+                    transcript=transcript,
+                    api_key=api_key,
+                    azure_endpoint=azure_endpoint,
+                    azure_api_version=azure_api_version,
+                    azure_model_name=azure_model_name,
+                    prompt_template=prompt_template,
+                    patient_data=patient_data,
+                    agent_settings=agent_settings or {},
+                    progress_callback=progress_callback
+                )
+
+                # Combine metadata from agent pipeline with router's metadata
+                metadata_result.update(agent_metadata)
+                # Ensure agent_based_processing_used is correctly set from agent_metadata or explicitly
+                metadata_result["agent_based_processing_used"] = agent_metadata.get("agent_based_processing_used", True)
+
+                logger.info("Agent-based note generation successful.")
+                return note_text, metadata_result
+
+            except Exception as e:
+                logger.error(f"Agent-based pipeline failed: {e}. Falling back to traditional method.", exc_info=True)
+                metadata_result["fallback_triggered"] = True
+                metadata_result["fallback_reason"] = f"Agent pipeline error: {str(e)}"
+                # Proceed to fallback (traditional method) which is handled after this if-block
+
+    # Fallback to traditional method or if traditional was chosen initially
+    # This block is reached if:
+    # 1. use_agent_pipeline was False
+    # 2. use_local was True
+    # 3. Agent pipeline was selected but Azure credentials were missing (and fallback_triggered was set)
+    # 4. Agent pipeline was attempted and an exception occurred (and fallback_triggered was set)
+
+    logger.info("Using traditional note generation method (either as primary choice or as fallback).")
+    # Update pipeline_type_attempted if it was 'agent' but failed leading to fallback
+    if metadata_result["pipeline_type_attempted"] == "agent" and metadata_result["fallback_triggered"]:
+         logger.info(f"Fallback to traditional method was triggered. Reason: {metadata_result['fallback_reason']}")
+
+    metadata_result["pipeline_type_attempted"] = "traditional" # Set/confirm as traditional path
+
+    # Call the existing traditional 'generate_note' function from this file
+    traditional_note_text = await generate_note(
+        transcript=transcript,
+        api_key=api_key,
+        azure_endpoint=azure_endpoint,
+        azure_api_version=azure_api_version,
+        azure_model_name=azure_model_name,
+        prompt_template=prompt_template,
+        use_local=use_local,
+        local_model=local_model,
+        patient_data=patient_data
+    )
+
+    metadata_result["agent_based_processing_used"] = False # Explicitly false for traditional
+    metadata_result["traditional_note_details"] = {"note_length": len(traditional_note_text)} # Example detail
+
+    logger.info("Traditional note generation complete.")
+    return traditional_note_text, metadata_result
 
 # --- Transcription Cleanup ---
 async def clean_transcription(

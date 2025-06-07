@@ -51,6 +51,18 @@ config: dict[str, object] = {
     "AZURE_SPEECH_API_KEY": os.getenv("AZURE_SPEECH_API_KEY"),
     "AZURE_SPEECH_ENDPOINT": os.getenv("AZURE_SPEECH_ENDPOINT"),
 
+    # Agent-specific settings (NEW)
+    "AGENT_CONFIG": {
+        "max_refinements": 2,  # Default max refinement iterations for the agent pipeline
+        "quality_threshold": 90, # Default minimum quality score for agent approval
+        "agent_timeout": 120,  # Default timeout in seconds for individual agent calls (e.g., OpenAI API calls)
+        "enable_fallback": True, # Whether the agent pipeline should fallback to traditional if it fails
+        "cache_agent_responses": False, # Placeholder for future caching feature
+        # Add other agent-related default configurations here as needed
+        # For example, specific model names or parameters for individual agents if they differ from the main LLM
+        "extraction_completeness_threshold": 80, # Example: min score for extractor agent
+    },
+
     # fallback local model server
     "LOCAL_MODEL_API_URL": os.getenv(
         "LOCAL_MODEL_API_URL", "http://localhost:8000/generate_note"),

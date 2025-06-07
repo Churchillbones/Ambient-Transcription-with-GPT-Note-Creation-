@@ -39,7 +39,7 @@ def get_config_value(config_key: str, default_value: str = "") -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 def render_sidebar() -> Tuple[
     Optional[str], Optional[str], Optional[str], Optional[str],
-    str, bool, str, bool, Optional[str]
+    str, bool, str, bool, Optional[str], bool # Added bool for use_agent_pipeline
 ]:
     with st.sidebar:
         st.header("⚙️ Configuration")
@@ -142,6 +142,23 @@ def render_sidebar() -> Tuple[
         if not use_local_llm_for_notes and (not azure_openai_api_key_llm or not azure_openai_endpoint_llm) :
             st.warning("⚠️ Azure OpenAI selected for notes, but API Key/Endpoint for LLM is missing above.")
 
+        # NEW: Agent-based processing toggle
+        use_agent_pipeline = False # Default to False
+        if not use_local_llm_for_notes:  # Only show for Azure OpenAI
+            st.markdown("---") # Visual separator
+            st.markdown("**Advanced Options**")
+            use_agent_pipeline = st.checkbox(
+                "🤖 Use Agent-Based Processing (Beta)",
+                value=False, # Default value for the checkbox
+                help="Enable multi-agent system with iterative refinement for higher quality notes. This may take longer but can produce more accurate and complete documentation."
+            )
+
+            if use_agent_pipeline:
+                st.info("Agent-based processing uses specialized AI agents for:\n"
+                       "• Medical terminology correction\n"
+                       "• Clinical information extraction\n"
+                       "• Professional note writing\n"
+                       "• Quality review and refinement")
 
         st.subheader("Security")
         use_encryption = st.checkbox("Encrypt recordings on save", value=True)
@@ -177,8 +194,60 @@ def render_sidebar() -> Tuple[
             use_local_llm_for_notes,
             local_llm_model_name_for_notes,
             use_encryption,
-            language_to_return
+            language_to_return,
+            use_agent_pipeline  # NEW return value
         )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agent Settings Section (NEW)
+# ─────────────────────────────────────────────────────────────────────────────
+def render_agent_settings() -> Dict[str, Any]:
+    """Render agent-specific settings in the sidebar when agent pipeline is active."""
+
+    # Default settings, matching the issue description
+    # These can also be pulled from AGENT_CONFIG in config.py if desired for consistency
+    default_max_refinements = config.get("AGENT_CONFIG", {}).get("max_refinements", 2)
+    default_quality_threshold = config.get("AGENT_CONFIG", {}).get("quality_threshold", 90)
+    # Default for enable_stage_display can be True or False based on preference.
+    # The issue implies it's True, so we'll use that.
+    default_enable_stage_display = True
+
+    settings = {}
+    with st.sidebar.expander("🤖 Agent Settings", expanded=True): # Expanded by default for visibility
+        st.markdown("### Agent Pipeline Configuration")
+
+        settings["max_refinements"] = st.slider(
+            "Maximum Refinement Iterations",
+            min_value=0, # Allow 0 for no explicit refinement after initial review
+            max_value=5,
+            value=default_max_refinements, # Default value from config or issue
+            help="Number of times the Quality Reviewer agent can request revisions from the Writer agent. 0 means one review, but no forced rewrite iterations if score is low but note is returned."
+        )
+
+        settings["enable_stage_display"] = st.checkbox(
+            "Show Agent Processing Stages",
+            value=default_enable_stage_display, # Default from above
+            help="Display real-time updates in the UI as each agent processes the transcript."
+        )
+
+        settings["quality_threshold"] = st.slider(
+            "Minimum Quality Score for Approval", # Changed label for clarity
+            min_value=70,
+            max_value=100,
+            value=default_quality_threshold, # Default value from config or issue
+            help="Minimum quality score from the Reviewer agent before accepting a note without further refinement (if max_refinements allows)."
+        )
+
+        # Add other agent settings from AGENT_CONFIG if they are meant to be user-configurable
+        # For example, agent_timeout or enable_fallback, though these might be advanced.
+        # For now, sticking to the ones in the issue description for the UI.
+
+        # Example: Displaying non-configurable values from AGENT_CONFIG for info
+        st.markdown("---")
+        st.caption(f"Agent Timeout (seconds): {config.get('AGENT_CONFIG', {}).get('agent_timeout', 'N/A')}")
+        st.caption(f"Fallback to Traditional on Agent Error: {'Enabled' if config.get('AGENT_CONFIG', {}).get('enable_fallback', True) else 'Disabled'}")
+
+    return settings
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Patient Data Section
@@ -474,13 +543,128 @@ def render_realtime_asr(
 # ─────────────────────────────────────────────────────────────────────────────
 # Recording Flow: Start, Pause, Stop → Pipeline Results (Traditional)
 # ─────────────────────────────────────────────────────────────────────────────
+async def process_transcript_and_display_results_ui(
+    transcript: str,
+    azure_key_for_llm: Optional[str], # Specifically the key for LLM tasks (notes, agents)
+    azure_endpoint_for_llm: Optional[str], # Specifically the endpoint for LLM tasks
+    azure_api_version_for_llm: Optional[str],
+    azure_model_name_for_llm: Optional[str],
+    use_local_llm_for_notes: bool,
+    local_llm_model_name: str,
+    patient_data: dict,
+    template_text: str,
+    use_agent_pipeline: bool,
+    agent_settings: Dict[str, Any],
+) -> None: # This function handles its own UI display
+    """
+    Processes the transcript using either traditional or agent pipeline (via llm_integration.generate_note_router)
+    and displays the results and metadata in the Streamlit UI.
+    """
+    from .llm_integration import generate_note_router # Import the router
+
+    if not transcript or transcript.startswith("ERROR:"):
+        st.error(f"Cannot process note generation. Invalid transcript: {transcript}")
+        return
+
+    st.subheader("📝 Generated Note & Details")
+    results_placeholder = st.empty() # Placeholder for dynamic content like spinners and results
+
+    note_text = "Error: Note generation did not complete." # Default
+    metadata: Dict[str, Any] = {}
+
+    spinner_message = "🤖 Processing with AI agents..." if use_agent_pipeline and not use_local_llm_for_notes else "⏳ Generating note..."
+
+    with results_placeholder.container():
+        with st.spinner(spinner_message):
+            progress_callback_ui = None
+            if use_agent_pipeline and not use_local_llm_for_notes and agent_settings.get("enable_stage_display", False):
+                with st.status("🤖 Agent Pipeline Processing...", expanded=True) as status_ui_element:
+                    progress_callback_ui = status_ui_element
+                    note_text, metadata = await generate_note_router(
+                        transcript=transcript,
+                        api_key=azure_key_for_llm,
+                        azure_endpoint=azure_endpoint_for_llm,
+                        azure_api_version=azure_api_version_for_llm,
+                        azure_model_name=azure_model_name_for_llm,
+                        use_local=use_local_llm_for_notes,
+                        local_model=local_llm_model_name,
+                        patient_data=patient_data,
+                        prompt_template=template_text,
+                        use_agent_pipeline=use_agent_pipeline,
+                        agent_settings=agent_settings,
+                        progress_callback=progress_callback_ui
+                    )
+            else:
+                note_text, metadata = await generate_note_router(
+                    transcript=transcript,
+                    api_key=azure_key_for_llm,
+                    azure_endpoint=azure_endpoint_for_llm,
+                    azure_api_version=azure_api_version_for_llm,
+                    azure_model_name=azure_model_name_for_llm,
+                    use_local=use_local_llm_for_notes,
+                    local_model=local_llm_model_name,
+                    patient_data=patient_data,
+                    prompt_template=template_text,
+                    use_agent_pipeline=use_agent_pipeline,
+                    agent_settings=agent_settings,
+                    progress_callback=None
+                )
+
+    results_placeholder.empty()
+
+    st.text_area("Generated Note", note_text, height=300, key=f"final_note_display_{time.time()}")
+
+    was_agent_pipeline_used = metadata.get("agent_based_processing_used", False)
+
+    if was_agent_pipeline_used and "error" not in metadata.get("final_status","").lower() and "failure" not in metadata.get("final_status","").lower() :
+        st.success("✅ Agent-based processing complete!")
+
+        col1, col2, col3 = st.columns(3)
+        total_duration_agent = metadata.get("total_duration_seconds", 0)
+        extraction_details = metadata.get("stages_summary", {}).get("medical_information_extraction", {}).get("details", {})
+        completeness_score = extraction_details.get("completeness_score", 0) if isinstance(extraction_details, dict) else 0
+
+        refinement_process_details = metadata.get("stages_summary", {}).get("refinement_process", {}).get("details", {})
+        refinement_iters = refinement_process_details.get("iterations_done", 0) if isinstance(refinement_process_details, dict) else 0
+
+        with col1: st.metric("Total Time (Agent)", f"{total_duration_agent:.1f}s")
+        with col2: st.metric("Completeness Score", f"{completeness_score:.0f}%" if completeness_score else "N/A")
+        with col3: st.metric("Refinement Iterations", refinement_iters if refinement_iters else "N/A")
+
+        with st.expander("🔍 Agent Processing Details", expanded=False):
+            st.json(metadata)
+
+    elif metadata.get("fallback_triggered", False):
+        st.warning(f"⚠️ Agent processing failed, fell back to traditional method. Reason: {metadata.get('fallback_reason', 'Unknown')}")
+
+    elif "error" in metadata.get("pipeline_status","").lower() or "failure" in metadata.get("pipeline_status","").lower() :
+            st.error(f"Note generation failed. Status: {metadata.get('pipeline_status', 'Unknown')}. Details: {metadata.get('error_details', 'N/A')}")
+    else:
+        st.success("✅ Traditional note generation complete!")
+
+    if note_text and not note_text.startswith("Error:") and not use_local_llm_for_notes:
+        with st.spinner("Generating coding and payer review..."):
+            from .token_management import generate_coding_and_review
+            coding_review = generate_coding_and_review(
+                note_text,
+                azure_endpoint=azure_endpoint_for_llm,
+                azure_api_key=azure_key_for_llm,
+                deployment_name=azure_model_name_for_llm,
+                api_version=azure_api_version_for_llm
+            )
+        st.subheader("Coding & Payer Review")
+        st.text_area("E/M, ICD-10, SNOMED, CPT, Risk, SDOH, Alternate Dx, Payer Review", coding_review, height=350, key=f"coding_review_display_{time.time()}")
+
+
 def render_recording_section(
     asr_service_key: Optional[str], asr_service_endpoint: Optional[str], 
     openai_api_version_llm: Optional[str], openai_model_name_llm: Optional[str], 
     asr_info: str, 
     use_local_llm_for_notes: bool, local_llm_model_name_for_notes: str, 
     use_encryption: bool,
-    language: Optional[str]
+    language: Optional[str],
+    use_agent_pipeline: bool, # New
+    agent_settings: Dict[str, Any] # New
 ):
     st.subheader("🎙️ Record & Generate Note")
     
@@ -578,29 +762,20 @@ def render_recording_section(
                             raw = transcribe_audio(wav_path, "vosk_model", model_path=vosk_model_path)
                     if raw.startswith("ERROR:"): st.error(f"Transcription failed: {raw}")
                     else:
-                        st.subheader("Raw Transcript"); st.text_area("", raw, height=180, key="trad_raw_txt_key_main")
-                        if (llm_key_for_llm_tasks and llm_endpoint_for_llm_tasks and not use_local_llm_for_notes) or use_local_llm_for_notes:
-                            with st.spinner("Cleaning..."): cleaned = asyncio.run(clean_transcription(raw, llm_key_for_llm_tasks, llm_endpoint_for_llm_tasks, openai_api_version_llm, openai_model_name_llm, use_local_llm_for_notes, local_llm_model_name_for_notes))
-                            st.subheader("Cleaned"); st.text_area("", cleaned, height=180, key="trad_cleaned_txt_key_main")
-                            with st.spinner("Diarizing..."): diarized = asyncio.run(generate_gpt_speaker_tags(cleaned, llm_key_for_llm_tasks, llm_endpoint_for_llm_tasks, openai_api_version_llm, openai_model_name_llm))
-                            st.subheader("Diarized"); st.text_area("", diarized, height=180, key="trad_diarized_txt_key_main")
-                            if template:
-                                with st.spinner("Generating note..."): note = asyncio.run(generate_note(diarized, llm_key_for_llm_tasks, llm_endpoint_for_llm_tasks, openai_api_version_llm, openai_model_name_llm, template, use_local_llm_for_notes, local_llm_model_name_for_notes, patient))
-                                st.subheader("Generated Note"); st.text_area("", note, height=240, key="trad_note_txt_key_main")
-                                # --- Coding and Payer Review Section ---
-                                with st.spinner("Generating coding and payer review..."):
-                                    coding_review = generate_coding_and_review(
-                                        note,
-                                        azure_endpoint=llm_endpoint_for_llm_tasks,
-                                        azure_api_key=llm_key_for_llm_tasks,
-                                        deployment_name=openai_model_name_llm,
-                                        api_version=openai_api_version_llm
-                                    )
-                                st.subheader("Coding & Payer Review")
-                                st.text_area("E/M, ICD-10, SNOMED, CPT, Risk, SDOH, Alternate Dx, Payer Review", coding_review, height=350, key="trad_coding_review_txt_key_main")
-                        else:
-                            st.warning("LLM credentials (Azure OpenAI or Local) not configured. Basic diarization only.")
-                            st.text_area("Basic Diarized", apply_speaker_diarization(raw), height=180, key="trad_basic_diarized_key_main")
+                        st.subheader("Raw Transcript"); st.text_area("", raw, height=180, key=f"rec_raw_transcript_{time.time()}")
+                        asyncio.run(process_transcript_and_display_results_ui(
+                            transcript=raw,
+                            azure_key_for_llm=llm_key_for_llm_tasks,
+                            azure_endpoint_for_llm=llm_endpoint_for_llm_tasks,
+                            azure_api_version_for_llm=openai_api_version_llm,
+                            azure_model_name_for_llm=openai_model_name_llm,
+                            use_local_llm_for_notes=use_local_llm_for_notes,
+                            local_llm_model_name=local_llm_model_name_for_notes,
+                            patient_data=patient,
+                            template_text=template,
+                            use_agent_pipeline=use_agent_pipeline,
+                            agent_settings=agent_settings
+                        ))
                 except Exception as e: logger.error(f"Trad processing error: {e}", exc_info=True); st.error(f"Processing error: {e}")
                 if use_encryption and Path(wav_path).exists():
                     with st.spinner("Encrypting audio file..."):
@@ -617,7 +792,9 @@ def render_upload_section(
     asr_info: str, 
     use_local_llm_for_notes: bool, local_llm_model_name_for_notes: str, 
     use_encryption: bool = False,
-    language: Optional[str] = "en-US"
+    language: Optional[str] = "en-US",
+    use_agent_pipeline: bool, # New
+    agent_settings: Dict[str, Any] # New
 ):
     st.subheader("⬆️ Upload Audio & Generate Note")
     consent_container = st.container(border=True)
@@ -665,30 +842,21 @@ def render_upload_section(
         st.subheader("Raw Transcript"); st.text_area("", raw_transcript_upload, height=180, key="upload_raw_disp_key_upload") # Unique key
         if st.button("Process Transcript & Generate Note", disabled=not has_consent, key="upload_proc_btn_key_upload"): # Unique key
             if raw_transcript_upload.startswith("ERROR:"): st.error(f"Cannot process, error: {raw_transcript_upload}"); return
-            if (llm_key_for_llm_tasks and llm_endpoint_for_llm_tasks and not use_local_llm_for_notes) or use_local_llm_for_notes:
-                with st.spinner("Processing..."):
-                    cleaned_up = asyncio.run(clean_transcription(raw_transcript_upload, llm_key_for_llm_tasks, llm_endpoint_for_llm_tasks, openai_api_version_llm, openai_model_name_llm, use_local_llm_for_notes, local_llm_model_name_for_notes))
-                    diarized_up = asyncio.run(generate_gpt_speaker_tags(cleaned_up, llm_key_for_llm_tasks, llm_endpoint_for_llm_tasks, openai_api_version_llm, openai_model_name_llm))
-                    st.subheader("Cleaned"); st.text_area("", cleaned_up, height=180, key="upload_clean_disp_key_upload") 
-                    st.subheader("Diarized"); st.text_area("", diarized_up, height=180, key="upload_diar_disp_key_upload") 
-                    if template:
-                        with st.spinner("Generating note..."): note_up = asyncio.run(generate_note(diarized_up, llm_key_for_llm_tasks, llm_endpoint_for_llm_tasks, openai_api_version_llm, openai_model_name_llm, template, use_local_llm_for_notes, local_llm_model_name_for_notes, patient))
-                        st.subheader("Generated Note"); st.text_area("", note_up, height=240, key="upload_note_disp_key_upload")
-                        
-                        # --- Coding and Payer Review Section ---
-                        with st.spinner("Generating coding and payer review..."):
-                            coding_review = generate_coding_and_review(
-                                note_up,
-                                azure_endpoint=llm_endpoint_for_llm_tasks,
-                                azure_api_key=llm_key_for_llm_tasks,
-                                deployment_name=openai_model_name_llm,
-                                api_version=openai_api_version_llm
-                            )
-                        st.subheader("Coding & Payer Review")
-                        st.text_area("E/M, ICD-10, SNOMED, CPT, Risk, SDOH, Alternate Dx, Payer Review", coding_review, height=350, key="upload_coding_review_txt_key_upload")
-            else: 
-                st.warning("LLM credentials (Azure OpenAI or Local) not configured. Basic diarization only.")
-                st.text_area("Basic Diarized", apply_speaker_diarization(raw_transcript_upload), height=180, key="upload_basic_diar_disp_key_upload") 
+
+            asyncio.run(process_transcript_and_display_results_ui(
+                transcript=raw_transcript_upload,
+                azure_key_for_llm=llm_key_for_llm_tasks,
+                azure_endpoint_for_llm=llm_endpoint_for_llm_tasks,
+                azure_api_version_for_llm=openai_api_version_llm,
+                azure_model_name_for_llm=openai_model_name_llm,
+                use_local_llm_for_notes=use_local_llm_for_notes,
+                local_llm_model_name=local_llm_model_name_for_notes,
+                patient_data=patient,
+                template_text=template,
+                use_agent_pipeline=use_agent_pipeline,
+                agent_settings=agent_settings
+            ))
+
         if use_encryption and final_audio_path_str and Path(final_audio_path_str).exists():
             with st.spinner("Encrypting audio file..."): 
                 with secure_audio_processing(final_audio_path_str, True): 
@@ -803,3 +971,103 @@ def render_model_comparison_section(
                 elif wc2 > wc1: st.info(f"{m2_disp} produced a longer transcript.")
                 else: st.success("Both models produced transcripts of the same word count.")
         except Exception as e: logger.error(f"Comparison error: {e}", exc_info=True); st.error(f"Comparison failed: {e}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Note Comparison View (NEW)
+# ─────────────────────────────────────────────────────────────────────────────
+def render_comparison_view(
+    traditional_note: str,
+    agent_note: str,
+    traditional_metadata: Dict[str, Any],
+    agent_metadata: Dict[str, Any]
+) -> None:
+    """
+    Renders a side-by-side comparison of notes generated by the traditional
+    and agent-based pipelines, along with their respective metadata.
+    """
+    st.subheader("📊 Note Generation Comparison")
+
+    # Ensure metadata are dicts even if None is passed
+    trad_meta = traditional_metadata or {}
+    agent_meta = agent_metadata or {}
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### Traditional Pipeline")
+        st.text_area("Generated Note (Traditional)", traditional_note, height=400, key="trad_note_comparison_text") # Added unique key
+
+        # Display processing time from metadata if available
+        # Assuming 'total_duration_seconds' might be a key from traditional pipeline metadata too
+        # or 'total_duration' as per issue. Let's check for both.
+        trad_time = trad_meta.get("total_duration_seconds", trad_meta.get("total_duration"))
+        if trad_time is not None:
+            st.metric("Processing Time (Traditional)", f"{float(trad_time):.1f}s")
+        else:
+            st.caption("Processing time for traditional note not available.")
+
+    with col2:
+        st.markdown("### Agent-Based Pipeline")
+        st.text_area("Generated Note (Agent)", agent_note, height=400, key="agent_note_comparison_text") # Added unique key
+
+        # Display processing time and quality score from agent metadata
+        agent_time = agent_meta.get("total_duration_seconds", agent_meta.get("total_duration"))
+        if agent_time is not None:
+            st.metric("Processing Time (Agent)", f"{float(agent_time):.1f}s")
+        else:
+            st.caption("Processing time for agent note not available.")
+
+        # Extracting quality score based on the last agent metadata structure
+        # final_score = agent_meta.get("final_compliance_score") # From an earlier agent version
+        # Let's try to get it from the stages_summary or final_quality_score
+        quality_score = None
+        if "stages_summary" in agent_meta and isinstance(agent_meta["stages_summary"], dict):
+            refinement_details = agent_meta["stages_summary"].get("refinement_process", {}).get("details", {})
+            if isinstance(refinement_details, dict) and "final_score_after_refinement" in refinement_details:
+                quality_score = refinement_details["final_score_after_refinement"]
+            elif isinstance(refinement_details, dict) and refinement_details.get("history"): # Check last iteration
+                try:
+                    quality_score = refinement_details["history"][-1].get("quality_score")
+                except (IndexError, TypeError):
+                    pass # Could not get it
+
+        # Fallback to a top-level key if present from older metadata structures
+        if quality_score is None:
+            quality_score = agent_meta.get("final_quality_score", agent_meta.get("final_compliance_score"))
+
+
+        if quality_score is not None:
+            st.metric("Quality Score (Agent)", f"{quality_score:.0f}%")
+        else:
+            st.caption("Quality score for agent note not available.")
+
+    # Difference analysis button and expander
+    if st.button("🔍 Analyze Differences", key="analyze_diff_btn_comparison"): # Added unique key
+        with st.expander("Detailed Word Count Analysis", expanded=True):
+            trad_words = len(traditional_note.split()) if traditional_note else 0
+            agent_words = len(agent_note.split()) if agent_note else 0
+
+            st.write("**Word Count Comparison:**")
+            st.markdown(f"- Traditional Note: `{trad_words}` words")
+            st.markdown(f"- Agent-Based Note: `{agent_words}` words")
+            st.markdown(f"- Difference: `{abs(trad_words - agent_words)}` words")
+
+            if agent_words > trad_words:
+                st.write(f"The agent-based note is **{agent_words - trad_words}** words longer.")
+            elif trad_words > agent_words:
+                st.write(f"The traditional note is **{trad_words - agent_words}** words longer.")
+            else:
+                st.write("Both notes have the same word count.")
+
+        # Placeholder for more advanced diff (e.g., using difflib)
+        # For now, just word count as per issue.
+        # import difflib
+        # diff = difflib.ndiff(traditional_note.splitlines(), agent_note.splitlines())
+        # st.subheader("Line-by-Line Difference (Simplified)")
+        # diff_html = ""
+        # for line in diff:
+        #     if line.startswith('+ '): diff_html += f'<span style="color: green;">{line}</span><br>'
+        #     elif line.startswith('- '): diff_html += f'<span style="color: red;">{line}</span><br>'
+        #     elif line.startswith('? '): continue # Skip ? lines
+        #     else: diff_html += f'{line}<br>'
+        # st.markdown(f"<pre>{diff_html}</pre>", unsafe_allow_html=True)
