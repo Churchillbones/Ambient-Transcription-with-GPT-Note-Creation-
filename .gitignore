@@ -27,3 +27,8 @@
 .env
 *.env
 *.key
+!bleach.py
+!dotenv.py
+!openai.py
+!pyaudio.py
+!requests.py
