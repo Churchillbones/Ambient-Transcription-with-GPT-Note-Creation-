@@ -9,6 +9,8 @@ import asyncio, io, json, time, wave, queue
 from pathlib import Path
 from typing import Tuple, Optional, List, Dict, Any
 
+from .models import AppSettings, AgentSettings
+
 import numpy as np
 import streamlit as st
 # import librosa # Not currently used, can be removed if not planned
@@ -37,10 +39,7 @@ def get_config_value(config_key: str, default_value: str = "") -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar configuration
 # ─────────────────────────────────────────────────────────────────────────────
-def render_sidebar() -> Tuple[
-    Optional[str], Optional[str], Optional[str], Optional[str],
-    str, bool, str, bool, Optional[str], bool # Added bool for use_agent_pipeline
-]:
+def render_sidebar() -> AppSettings:
     with st.sidebar:
         st.header("⚙️ Configuration")
 
@@ -185,23 +184,23 @@ def render_sidebar() -> Tuple[
                 config["TOKEN_MANAGEMENT_APPROACH"] = "two_stage"
                 st.success("✅ Using **Two-Stage Summarization** approach")
 
-        return (
-            primary_service_key_to_return,
-            primary_service_endpoint_to_return,
-            azure_openai_api_version_llm,
-            azure_openai_model_name_llm,
-            asr_model_info_to_return,
-            use_local_llm_for_notes,
-            local_llm_model_name_for_notes,
-            use_encryption,
-            language_to_return,
-            use_agent_pipeline  # NEW return value
+        return AppSettings(
+            azure_api_key=primary_service_key_to_return,
+            azure_endpoint=primary_service_endpoint_to_return,
+            azure_api_version=azure_openai_api_version_llm,
+            azure_model_name=azure_openai_model_name_llm,
+            asr_model_info=asr_model_info_to_return,
+            use_local_llm=use_local_llm_for_notes,
+            local_llm_model=local_llm_model_name_for_notes,
+            use_encryption=use_encryption,
+            language=language_to_return,
+            use_agent_pipeline=use_agent_pipeline
         )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Settings Section (NEW)
 # ─────────────────────────────────────────────────────────────────────────────
-def render_agent_settings() -> Dict[str, Any]:
+def render_agent_settings() -> AgentSettings:
     """Render agent-specific settings in the sidebar when agent pipeline is active."""
 
     # Default settings, matching the issue description
@@ -247,7 +246,11 @@ def render_agent_settings() -> Dict[str, Any]:
         st.caption(f"Agent Timeout (seconds): {config.get('AGENT_CONFIG', {}).get('agent_timeout', 'N/A')}")
         st.caption(f"Fallback to Traditional on Agent Error: {'Enabled' if config.get('AGENT_CONFIG', {}).get('enable_fallback', True) else 'Disabled'}")
 
-    return settings
+    return AgentSettings(
+        max_refinements=settings["max_refinements"],
+        enable_stage_display=settings["enable_stage_display"],
+        quality_threshold=settings["quality_threshold"]
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Patient Data Section
