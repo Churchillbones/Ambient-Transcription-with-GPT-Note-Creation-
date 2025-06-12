@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Union
 
-from ..config import config, logger
+from ..config import config
 from .whisper import WhisperTranscriber
 from .vosk import VoskTranscriber
 from .azure_speech import AzureSpeechTranscriber, AzureWhisperTranscriber
@@ -37,31 +37,26 @@ def transcribe_audio(
             return f"ERROR: {e}"
         return transcriber.transcribe(wav_file)
 
-    if model_id == "azure_speech":
-        transcriber = AzureSpeechTranscriber(
+    transcribers = {
+        "azure_speech": AzureSpeechTranscriber(
             speech_key=azure_key or "",
             speech_endpoint=azure_endpoint or "",
             openai_key=openai_key,
             openai_endpoint=openai_endpoint,
             language=lang_code,
             return_raw=return_raw,
-        )
-        return transcriber.transcribe(wav_file)
-
-    if model_id == "vosk_model":
-        transcriber = VoskTranscriber(model_path or str(config["MODEL_DIR"] / "vosk-model-small-en-us-0.15"))
-        return transcriber.transcribe(wav_file)
-
-    if model_id == "vosk_small":
-        transcriber = VoskTranscriber(str(config["MODEL_DIR"] / "vosk-model-small-en-us-0.15"))
-        return transcriber.transcribe(wav_file)
-
-    if model_id == "azure_whisper":
-        transcriber = AzureWhisperTranscriber(
+        ),
+        "vosk_model": VoskTranscriber(model_path or str(config["MODEL_DIR"] / "vosk-model-small-en-us-0.15")),
+        "vosk_small": VoskTranscriber(str(config["MODEL_DIR"] / "vosk-model-small-en-us-0.15")),
+        "azure_whisper": AzureWhisperTranscriber(
             api_key=openai_key or "",
             endpoint=openai_endpoint or "",
             language=lang_code,
-        )
+        ),
+    }
+
+    transcriber = transcribers.get(model_id)
+    if transcriber:
         return transcriber.transcribe(wav_file)
 
     return (
