@@ -23,11 +23,13 @@ from ..llm.llm_integration import generate_note, clean_transcription
 from ..encryption import secure_audio_processing
 from ..llm.prompts import load_prompt_templates, save_custom_template
 from ..audio.audio_processing import (
-    live_vosk_callback,
-    live_whisper_callback,
     format_transcript_with_confidence,
     format_elapsed_time,
-    live_azure_callback
+)
+from ..asr.streaming import (
+    VoskStreamingHandler,
+    WhisperStreamingHandler,
+    AzureSpeechStreamingHandler,
 )
 from ..llm.token_management import generate_coding_and_review
 
@@ -353,7 +355,11 @@ def render_realtime_asr(
     consent_given: bool = False
 ):
     from ..audio.recorder import StreamRecorder
-    from ..audio.audio_processing import live_vosk_callback, live_whisper_callback, live_azure_callback # live_azure_callback needs Azure Speech credentials
+    from ..asr.streaming import (
+        VoskStreamingHandler,
+        WhisperStreamingHandler,
+        AzureSpeechStreamingHandler,
+    )
     import time
 
     st.write("### Real-time Transcription")
@@ -404,10 +410,10 @@ def render_realtime_asr(
             q = queue.Queue(); st.session_state.update_queue = q
             try:
                 callback_fn = None
-                if is_local_whisper: callback_fn = live_whisper_callback(asr_info.split(":", 1)[1], q)
+                if is_local_whisper:
+                    callback_fn = WhisperStreamingHandler(asr_info.split(":", 1)[1], q)
                 elif is_azure_speech:
-                    # live_azure_callback is passed asr_service_key and asr_service_endpoint, which are Speech credentials
-                    callback_fn = live_azure_callback(asr_service_key, asr_service_endpoint, q) 
+                    callback_fn = AzureSpeechStreamingHandler(asr_service_key, asr_service_endpoint, q)
                 elif is_azure_whisper_sdk:
                     st.error("Live transcription for Azure Whisper (OpenAI SDK) is not supported by available callbacks. Use Traditional Recording.")
                     st.session_state.realtime_recording = False; st.stop()
@@ -415,7 +421,7 @@ def render_realtime_asr(
                     vosk_path_to_use = str(config["MODEL_DIR"] / "vosk-model-small-en-us-0.15") if asr_info == "vosk_small" else asr_info
                     if not Path(vosk_path_to_use).exists() and asr_info != "vosk_small":
                         st.error(f"Vosk model not found at {vosk_path_to_use}. Real-time will fail."); st.stop()
-                    callback_fn = live_vosk_callback(vosk_path_to_use, q)
+                    callback_fn = VoskStreamingHandler(vosk_path_to_use, q)
                 
                 if callback_fn:
                     recorder = StreamRecorder(on_chunk=callback_fn)
