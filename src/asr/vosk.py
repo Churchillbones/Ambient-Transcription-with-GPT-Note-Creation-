@@ -8,15 +8,22 @@ from typing import Optional
 
 import requests
 
+from dataclasses import dataclass
+
 from .base import Transcriber
 from ..config import config, logger
 
 
+@dataclass
 class VoskTranscriber(Transcriber):
     """Transcriber using the Vosk engine."""
 
-    def __init__(self, model_path: Optional[str] = None) -> None:
-        self.model_path = Path(model_path) if model_path else config["MODEL_DIR"] / "vosk-model-small-en-us-0.15"
+    model_path: Optional[Path] = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.model_path, str):
+            self.model_path = Path(self.model_path)
+        self.model_path = self.model_path or config["MODEL_DIR"] / "vosk-model-small-en-us-0.15"
 
     # ------------------------------------------------------------------
     def _download_small_model(self, target_dir: Path) -> None:
@@ -29,11 +36,11 @@ class VoskTranscriber(Transcriber):
         zip_path = target_dir / f"{model_name}.zip"
         target_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Downloading Vosk model {model_name} from {url} to {zip_path}")
-        r = requests.get(url, timeout=120, stream=True)
-        r.raise_for_status()
-        with open(zip_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192 * 16):
-                f.write(chunk)
+        with requests.get(url, timeout=120, stream=True) as r:
+            r.raise_for_status()
+            with open(zip_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192 * 16):
+                    f.write(chunk)
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
             zip_ref.extractall(target_dir)
         os.remove(zip_path)

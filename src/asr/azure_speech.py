@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -11,40 +12,44 @@ from .base import Transcriber
 from ..config import config, logger
 
 
+@dataclass
 class AzureSpeechTranscriber(Transcriber):
     """Transcriber using Azure Speech service with optional OpenAI post-processing."""
 
-    def __init__(
-        self,
-        speech_key: str,
-        speech_endpoint: str,
-        openai_key: Optional[str] = None,
-        openai_endpoint: Optional[str] = None,
-        language: str = "en-US",
-        return_raw: bool = False,
-    ) -> None:
-        self.speech_key = speech_key
-        self.speech_endpoint = speech_endpoint
-        self.openai_key = openai_key
-        self.openai_endpoint = openai_endpoint
-        self.language = language or "en-US"
-        self.return_raw = return_raw
+    speech_key: str
+    speech_endpoint: str
+    openai_key: Optional[str] = None
+    openai_endpoint: Optional[str] = None
+    language: str = "en-US"
+    return_raw: bool = False
+
+    def __post_init__(self) -> None:
+        self.language = self.language or "en-US"
+
+    def _get_openai_client(self):
+        try:
+            from openai import AzureOpenAI  # type: ignore
+        except Exception:  # pragma: no cover - openai not installed
+            raise ImportError("OpenAI SDK not installed")
+        return AzureOpenAI(
+            api_key=self.openai_key,
+            api_version=str(config.get("API_VERSION")),
+            azure_endpoint=self.openai_endpoint,
+        )
 
     # ------------------------------------------------------------------
     def _post_process(self, transcript: str) -> str:
         if not self.openai_key or not self.openai_endpoint or config.get("SKIP_OPENAI_SUMMARIZATION", False):
             return transcript
         try:
-            from openai import AzureOpenAI  # type: ignore
-        except Exception:  # pragma: no cover - openai not installed
+            client = self._get_openai_client()
+        except ImportError:
             logger.warning("OpenAI SDK not installed. Skipping post-processing.")
             return transcript
+        except Exception as exc:  # pragma: no cover - client init failure
+            logger.error(f"Failed to create OpenAI client: {exc}")
+            return transcript
         try:
-            client = AzureOpenAI(
-                api_key=self.openai_key,
-                api_version=str(config.get("API_VERSION")),
-                azure_endpoint=self.openai_endpoint,
-            )
             system_prompt = (
                 "Refine this raw audio transcript for clarity and medical context. "
                 "If it seems like a summary already, return it as is or improve its structure slightly."
@@ -113,13 +118,16 @@ class AzureSpeechTranscriber(Transcriber):
             return f"ERROR: Azure Speech pipeline failed: {e}"
 
 
+@dataclass
 class AzureWhisperTranscriber(Transcriber):
-    """Transcriber using Azure OpenAI Whisper deployment."""
+    """Transcriber using an Azure OpenAI Whisper deployment."""
 
-    def __init__(self, api_key: str, endpoint: str, language: str = "en-US") -> None:
-        self.api_key = api_key
-        self.endpoint = endpoint
-        self.language = language or "en-US"
+    api_key: str
+    endpoint: str
+    language: str = "en-US"
+
+    def __post_init__(self) -> None:
+        self.language = self.language or "en-US"
 
     def transcribe(self, audio_path: Path) -> str:
         if not self.api_key or not self.endpoint:
