@@ -11,15 +11,16 @@ import torch_streamlit_patch
 import streamlit as st
 
 # Import necessary components from the new src package
-from src.config import logger # Import logger early for potential use during imports
+from src.config import logger  # Import logger early for potential use during imports
 try:
-from src.ui.ui_components import (
+    from src.ui.ui_components import (
         render_sidebar,
         render_recording_section,
         render_upload_section,
         render_view_transcription_section,
-        render_model_comparison_section
+        render_model_comparison_section,
     )
+    from src.ui.models import AppSettings, AgentSettings
     # Import config if needed directly, though most access should be within modules
     # from src.config import config
 except ImportError as e:
@@ -56,19 +57,15 @@ def main():
     logger.info("Application started.")
 
     try:
-        # Get configuration from sidebar
-        # This function now resides in ui_components
-        # Returns: (api_key, endpoint, api_version, model_name, asr_model_info, use_local_llm, local_llm_model, use_encryption, language, use_agent_pipeline)
-        (azure_api_key, azure_endpoint, azure_api_version, azure_model_name, 
-         asr_model_info, use_local_llm, local_llm_model, use_encryption, language,
-         use_agent_pipeline) = render_sidebar() # Added use_agent_pipeline
-         
-        agent_settings = {} # Default to empty dict
-        if use_agent_pipeline and not use_local_llm:
-            # Ensure render_agent_settings is imported if it's not already automatically available
-            # (it should be, as render_sidebar is from the same module)
+        # Get configuration from sidebar as a dataclass instance
+        app_settings: AppSettings = render_sidebar()
+
+        from typing import Optional
+        agent_settings: Optional[AgentSettings] = None
+        if app_settings.use_agent_pipeline and not app_settings.use_local_llm:
             from src.ui.ui_components import render_agent_settings
             agent_settings = render_agent_settings()
+         
 
         # Create tabs for different functionalities
         tab_titles = ["Record Audio", "Upload Audio", "View Transcription", "Compare Notes", "Model Comparison"]
@@ -79,30 +76,46 @@ def main():
             st.header("Record & Generate Note")
             # Pass all relevant config down
             render_recording_section(
-                azure_api_key, azure_endpoint, azure_api_version, azure_model_name,
-                asr_model_info, use_local_llm, local_llm_model, use_encryption,
-                language,
-                use_agent_pipeline, # New
-                agent_settings      # New
+                app_settings.azure_api_key,
+                app_settings.azure_endpoint,
+                app_settings.azure_api_version,
+                app_settings.azure_model_name,
+                app_settings.asr_model_info,
+                app_settings.use_local_llm,
+                app_settings.local_llm_model,
+                app_settings.use_encryption,
+                app_settings.language,
+                app_settings.use_agent_pipeline,
+                agent_settings.as_dict() if agent_settings else {}
             )
             
         with tab2:
             st.header("Upload & Generate Note")
             # Pass all relevant config down
             render_upload_section(
-                azure_api_key, azure_endpoint, azure_api_version, azure_model_name,
-                asr_model_info, use_local_llm, local_llm_model, use_encryption,
-                language,
-                use_agent_pipeline, # New
-                agent_settings      # New
+                app_settings.azure_api_key,
+                app_settings.azure_endpoint,
+                app_settings.azure_api_version,
+                app_settings.azure_model_name,
+                app_settings.asr_model_info,
+                app_settings.use_local_llm,
+                app_settings.local_llm_model,
+                app_settings.use_encryption,
+                app_settings.language,
+                app_settings.use_agent_pipeline,
+                agent_settings.as_dict() if agent_settings else {}
             ) # Upload section has its own encryption toggle
             
         with tab3:
             st.header("View Transcription")
             # Pass necessary config for ASR and diarization
             render_view_transcription_section(
-                azure_api_key, azure_endpoint, azure_api_version, azure_model_name,
-                asr_model_info, language
+                app_settings.azure_api_key,
+                app_settings.azure_endpoint,
+                app_settings.azure_api_version,
+                app_settings.azure_model_name,
+                app_settings.asr_model_info,
+                app_settings.language
             )
 
         with tab4: # This was previously Model Comparison, now it's Compare Notes
@@ -174,7 +187,7 @@ def main():
         with tab5: # This was previously tab4
             st.header("Compare ASR Models")
             # The call to render_model_comparison_section remains the same, just in a new tab variable
-            render_model_comparison_section(asr_model_info, language)
+            render_model_comparison_section(app_settings.asr_model_info, app_settings.language)
 
     except FileNotFoundError as e:
          logger.error(f"File not found error in main app: {e}")
