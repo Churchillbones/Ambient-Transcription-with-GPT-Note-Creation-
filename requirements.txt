@@ -8,8 +8,12 @@ pyaudio
 vosk 
 git+https://github.com/openai/whisper.git
 torch
-torchaudio 
-torchvision 
+torchaudio
+torchvision
+numpy
+tiktoken
+scikit-learn
+urllib3
 
 # Security and data sanitization
 cryptography>=41.0.0
