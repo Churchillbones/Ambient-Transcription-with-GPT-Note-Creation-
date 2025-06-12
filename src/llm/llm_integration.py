@@ -4,8 +4,8 @@ from typing import Optional, Dict, Tuple, List
 from openai import AzureOpenAI, OpenAIError
 import streamlit as st
 
-from .config import config, logger
-from .utils import sanitize_input
+from ..config import config, logger
+from ..utils import sanitize_input
 from .token_management import (
     count_tokens,
     generate_note_from_chunked_transcript,

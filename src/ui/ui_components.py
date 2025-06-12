@@ -13,21 +13,21 @@ import numpy as np
 import streamlit as st
 # import librosa # Not currently used, can be removed if not planned
 
-from .config import config, logger 
-from .utils import sanitize_input
-from .transcription import transcribe_audio
-from .diarization import generate_gpt_speaker_tags, apply_speaker_diarization
-from .llm_integration import generate_note, clean_transcription
-from .encryption import secure_audio_processing
-from .prompts import load_prompt_templates, save_custom_template
-from .audio_processing import (
+from ..config import config, logger
+from ..utils import sanitize_input
+from ..asr.transcription import transcribe_audio
+from ..asr.diarization import generate_gpt_speaker_tags, apply_speaker_diarization
+from ..llm.llm_integration import generate_note, clean_transcription
+from ..encryption import secure_audio_processing
+from ..llm.prompts import load_prompt_templates, save_custom_template
+from ..audio.audio_processing import (
     live_vosk_callback,
     live_whisper_callback,
     format_transcript_with_confidence,
     format_elapsed_time,
     live_azure_callback
 )
-from .token_management import generate_coding_and_review
+from ..llm.token_management import generate_coding_and_review
 
 # Helper function to safely get values from config, then default
 def get_config_value(config_key: str, default_value: str = "") -> str:
@@ -349,8 +349,8 @@ def render_realtime_asr(
     language: Optional[str],
     consent_given: bool = False
 ):
-    from .recorder import StreamRecorder
-    from .audio_processing import live_vosk_callback, live_whisper_callback, live_azure_callback # live_azure_callback needs Azure Speech credentials
+    from ..audio.recorder import StreamRecorder
+    from ..audio.audio_processing import live_vosk_callback, live_whisper_callback, live_azure_callback # live_azure_callback needs Azure Speech credentials
     import time
 
     st.write("### Real-time Transcription")
@@ -696,7 +696,7 @@ def render_recording_section(
             patient, template, use_encryption, language, consent_given=has_consent
         )
     else:
-        from .recorder import StreamRecorder
+        from ..audio.recorder import StreamRecorder
         rec_instance = st.session_state.get("traditional_recorder")
         
         # --- Visual Feedback for Traditional Recording ---
@@ -793,8 +793,8 @@ def render_upload_section(
     use_local_llm_for_notes: bool, local_llm_model_name_for_notes: str, 
     use_encryption: bool = False,
     language: Optional[str] = "en-US",
-    use_agent_pipeline: bool, # New
-    agent_settings: Dict[str, Any] # New
+    use_agent_pipeline: bool = False,  # New
+    agent_settings: Optional[Dict[str, Any]] = None  # New
 ):
     st.subheader("⬆️ Upload Audio & Generate Note")
     consent_container = st.container(border=True)
@@ -825,7 +825,7 @@ def render_upload_section(
             temp_audio_file = temp_audio_dir / uploaded_file.name
             temp_audio_file.write_bytes(uploaded_file.read()); final_audio_path_str = str(temp_audio_file)
             if temp_audio_file.suffix.lower() != ".wav":
-                from .audio_processing import convert_to_wav
+                from ..audio.audio_processing import convert_to_wav
                 final_audio_path_str = convert_to_wav(final_audio_path_str)
         
         raw_transcript_upload = ""

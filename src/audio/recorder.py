@@ -16,7 +16,7 @@ from typing import List, Optional, Callable
 
 import pyaudio
 
-from .config import config, logger          # repo-local imports
+from ..config import config, logger          # repo-local imports
 
 
 class StreamRecorder:

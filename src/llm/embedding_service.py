@@ -4,7 +4,7 @@ import time
 import warnings
 import urllib3
 from typing import List, Dict, Any, Union
-from .config import config, logger
+from ..config import config, logger
 
 class EmbeddingService:
     """Service for generating and working with text embeddings"""

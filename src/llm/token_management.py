@@ -25,7 +25,7 @@ from typing import List, Dict, Any, Optional
 import openai
 from openai import AzureOpenAI, OpenAIError
 
-from .config import config, logger
+from ..config import config, logger
 
 def count_tokens(text: str, model: str = "gpt-4o") -> int:
     """Count the number of tokens in a string."""

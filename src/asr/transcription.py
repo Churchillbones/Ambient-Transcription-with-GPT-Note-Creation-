@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal, Union, Optional
 import zipfile 
 
-from .config import config, MODEL_DIR, logger
+from ..config import config, MODEL_DIR, logger
 
 ffmpeg_dir_path = Path(__file__).parent.parent / "ffmpeg" / "bin"
 os.environ["PATH"] = str(ffmpeg_dir_path) + os.pathsep + os.environ.get("PATH", "")
