@@ -14,8 +14,8 @@ import re # Import re for JSON extraction
 
 # Attempt to import from existing modules
 try:
-    from .config import config, logger
-    from .utils import sanitize_input
+    from ..config import config, logger
+    from ..utils import sanitize_input
 except ImportError:
     # Fallback for direct script execution or different project structures
     import sys

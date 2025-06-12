@@ -11,10 +11,10 @@ from typing import Tuple, Optional, List, Callable, Dict, Any
 import streamlit as st
 import pyaudio
 
-from .config import config, logger
-from .utils import audio_stream
+from ..config import config, logger
+from ..utils import audio_stream
 from .recorder import StreamRecorder        # NEW
-from .transcription import transcribe_audio  # reuse existing unified helper
+from ..asr.transcription import transcribe_audio  # reuse existing unified helper
 
 # ---------------------------------------------------------------------------
 # ADD 1:  fallback model loader if user hasn't implemented it elsewhere

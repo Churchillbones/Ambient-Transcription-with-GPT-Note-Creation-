@@ -11,7 +11,7 @@ try:
     import numpy as np
 except ImportError:
     np = None
-from .config import config, logger # Import config and logger from the same package
+from ..config import config, logger # Import config and logger from the same package
 
 # --- Utility Functions ---
 def sanitize_input(user_input: str) -> str:
@@ -162,7 +162,7 @@ def monitor_resources():
 
 # --- Embedding Utilities ---
 try:
-    from .embedding_service import EmbeddingService
+    from ..llm.embedding_service import EmbeddingService
 except ImportError:
     logger.warning("EmbeddingService module not found. Embedding features will be unavailable.")
     EmbeddingService = None

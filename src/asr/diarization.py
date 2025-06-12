@@ -2,8 +2,8 @@ import asyncio
 from typing import Optional
 from openai import AzureOpenAI, OpenAIError # Import specific error for better handling
 
-from .config import config, logger
-from .utils import sanitize_input # Import from utils
+from ..config import config, logger
+from ..utils import sanitize_input # Import from utils
 
 # --- Speaker Diarization ---
 

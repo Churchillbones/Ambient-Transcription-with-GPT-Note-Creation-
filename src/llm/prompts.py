@@ -4,7 +4,7 @@ from typing import Dict
 import streamlit as st # Added for caching
 
 # Import the full config object rather than just the logger
-from .config import config, logger
+from ..config import config, logger
 
 # --- Prompt Template Management ---
 
