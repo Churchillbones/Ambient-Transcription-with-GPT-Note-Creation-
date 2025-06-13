@@ -15,6 +15,10 @@
 # And not this directory and its contents
 !src/
 !src/**/*
+!frontend/
+!frontend/**/*
+!backend/
+!backend/**/*
 
 # Still ignore Python cache files everywhere
 **/__pycache__/
