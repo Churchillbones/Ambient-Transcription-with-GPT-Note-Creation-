@@ -6,11 +6,14 @@
 !LICENSE
 !README.md
 !requirements.txt
-!app.py
 !ollama_bridge.py
 !setup.bat
 !Start_app.bat
 !models_map.py
+!backend/
+!backend/**
+!frontend/
+!frontend/**
 
 # And not this directory and its contents
 !src/

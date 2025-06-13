@@ -1,5 +1,6 @@
 # Core web framework
-streamlit 
+fastapi
+uvicorn
 
 # Audio processing
 pyaudio 

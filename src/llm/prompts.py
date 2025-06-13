@@ -1,7 +1,7 @@
 import json
 import os
 from typing import Dict
-import streamlit as st # Added for caching
+from functools import lru_cache
 
 # Import the full config object rather than just the logger
 from ..config import config, logger
@@ -96,7 +96,7 @@ TEMPLATE_SUGGESTIONS = {
 }
 
 
-@st.cache_data
+@lru_cache(maxsize=None)
 def load_prompt_templates() -> Dict[str, str]:
     """Load prompt templates from JSON file, falling back to defaults."""
     prompt_file = config["PROMPT_STORE"]

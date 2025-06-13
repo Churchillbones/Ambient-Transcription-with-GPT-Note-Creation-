@@ -74,7 +74,8 @@ if exist "%~dp0requirements.txt" (
     echo [ERROR] requirements.txt not found in %~dp0
     echo Creating a basic requirements.txt file...
     (
-        echo streamlit>=1.27.0,^<2.0.0
+        echo fastapi>=0.110
+        echo uvicorn>=0.23
         echo pyaudio>=0.2.13
         echo wave
         echo vosk>=0.3.45
@@ -254,13 +255,10 @@ if not exist ".env" (
 )
 
 :: Run the application
-echo [INFO] Starting Medical Transcription App...
-echo If the app doesn't start, try running without admin privileges
-echo after the initial setup is complete.
-echo.
-streamlit run app.py
+echo [INFO] Starting Backend API...
+uvicorn backend.main:app --reload
 
-:: If streamlit exits with an error, pause to show the error message
+:: If the server exits with an error, pause to show the error message
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Application exited with an error.
     pause

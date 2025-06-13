@@ -1,0 +1,15 @@
+<h1>Ambient Scribe</h1>
+
+<input type="file" (change)="onFileSelected($event)">
+<button (click)="upload()">Transcribe</button>
+
+<div *ngIf="transcript">
+  <h2>Transcript</h2>
+  <pre>{{transcript}}</pre>
+  <button (click)="generateNote()">Generate Note</button>
+</div>
+
+<div *ngIf="note">
+  <h2>Generated Note</h2>
+  <pre>{{note}}</pre>
+</div>

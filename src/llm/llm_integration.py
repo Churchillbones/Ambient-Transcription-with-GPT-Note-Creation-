@@ -2,7 +2,6 @@ import asyncio
 import requests
 from typing import Optional, Dict, Tuple, List
 from openai import AzureOpenAI, OpenAIError
-import streamlit as st
 
 from ..config import config, logger
 from ..utils import sanitize_input
@@ -387,7 +386,6 @@ async def generate_note(
                 
                 if token_management_approach == "chunking":
                     logger.info(f"🧩 TOKEN MANAGEMENT: Using chunk processing for large transcript ({transcript_tokens} tokens)")
-                    st.info(f"🧩 Using chunk processing strategy for large transcript ({transcript_tokens} tokens)")
                     # Use synchronous function with asyncio.to_thread
                     note = await asyncio.to_thread(
                         lambda: generate_note_from_chunked_transcript(
@@ -403,7 +401,6 @@ async def generate_note(
                     return note
                 else:
                     logger.info(f"📝 TOKEN MANAGEMENT: Using two-stage summarization for large transcript ({transcript_tokens} tokens)")
-                    st.info(f"📝 Using two-stage summarization strategy for large transcript ({transcript_tokens} tokens)")
                     # Use synchronous function with asyncio.to_thread
                     note = await asyncio.to_thread(
                         lambda: generate_note_with_two_stage_summarization(
