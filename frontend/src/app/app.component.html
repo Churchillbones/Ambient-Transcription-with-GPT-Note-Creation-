@@ -1,0 +1,271 @@
+<div class="app-container">
+  <!-- Sidebar -->
+  <div class="sidebar" [class.collapsed]="sidebarCollapsed" id="sidebar">
+    <div class="sidebar-header">
+      <h2><i class="fas fa-cog"></i> Configuration</h2>
+    </div>
+
+    <!-- Azure Configuration -->
+    <div class="sidebar-section">
+      <h3>Azure Configuration</h3>
+      <div class="form-group">
+        <label class="form-label">Azure OpenAI API Key</label>
+        <input type="password" class="form-control" placeholder="Enter API key">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Azure OpenAI Endpoint</label>
+        <input type="text" class="form-control" placeholder="https://your-resource.openai.azure.com/">
+      </div>
+    </div>
+
+    <!-- Note Generation -->
+    <div class="sidebar-section">
+      <h3>Note Generation</h3>
+      <div class="form-group">
+        <label class="form-label">Note Model</label>
+        <select class="form-control">
+          <option>Azure OpenAI (GPT-4)</option>
+          <option>Local LLM Model</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Speech Recognition -->
+    <div class="sidebar-section">
+      <h3>Speech Recognition</h3>
+      <div class="form-group">
+        <label class="form-label">ASR Engine</label>
+        <select class="form-control" [(ngModel)]="asrEngine" (change)="onAsrChange($event.target.value)">
+          <option>Vosk</option>
+          <option>Whisper</option>
+          <option>Azure Speech</option>
+        </select>
+      </div>
+      <div class="form-group" *ngIf="asrEngine==='Vosk'">
+        <label class="form-label">Vosk Model</label>
+        <select class="form-control">
+          <option>vosk-model-small-en-us-0.15</option>
+          <option>vosk-model-en-us-0.22</option>
+        </select>
+      </div>
+      <div class="form-group" *ngIf="asrEngine==='Whisper'">
+        <label class="form-label">Whisper Size</label>
+        <select class="form-control">
+          <option>tiny</option>
+          <option>base</option>
+          <option>medium</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Security Settings -->
+    <div class="sidebar-section">
+      <h3>Security</h3>
+      <div class="checkbox-group">
+        <input type="checkbox" id="encryption" checked>
+        <label for="encryption">Encrypt recordings on save</label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main-content">
+    <!-- Header -->
+    <div class="header">
+      <h1>
+        <i class="fas fa-stethoscope"></i>
+        Medical Transcription &amp; Note Generation
+      </h1>
+      <div class="header-actions">
+        <button class="btn btn-secondary" (click)="toggleSidebar()">
+          <i class="fas fa-bars"></i>
+        </button>
+        <button class="btn btn-primary">
+          <i class="fas fa-download"></i>
+          Export
+        </button>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <div class="tab" [class.active]="activeTab==='record'" (click)="switchTab('record')">
+        <i class="fas fa-microphone"></i> Record Audio
+      </div>
+      <div class="tab" [class.active]="activeTab==='upload'" (click)="switchTab('upload')">
+        <i class="fas fa-upload"></i> Upload Audio
+      </div>
+      <div class="tab" [class.active]="activeTab==='view'" (click)="switchTab('view')">
+        <i class="fas fa-file-alt"></i> View Transcription
+      </div>
+      <div class="tab" [class.active]="activeTab==='compare'" (click)="switchTab('compare')">
+        <i class="fas fa-balance-scale"></i> Model Comparison
+      </div>
+    </div>
+
+    <!-- Tab Content -->
+    <div class="tab-content">
+      <!-- Record Tab -->
+      <div [hidden]="activeTab!=='record'">
+        <div class="consent-box" [class.approved]="consentRecorded" id="consentBox">
+          <div class="consent-header">
+            <i class="fas fa-clipboard-check"></i>
+            Patient Consent Documentation
+          </div>
+          <p *ngIf="!consentRecorded">The patient was informed of the presence of a listening and transcribing tool during the visit and given the option to opt out and agreed to proceed.</p>
+          <div class="form-group" style="margin-top: 16px;" *ngIf="!consentRecorded">
+            <input type="text" class="form-control" placeholder="Patient Name" [(ngModel)]="patientName">
+          </div>
+          <button class="btn btn-warning btn-lg btn-full" *ngIf="!consentRecorded" (click)="documentConsent()">
+            <i class="fas fa-check-circle"></i>
+            Document Patient Consent
+          </button>
+          <div *ngIf="consentRecorded">
+            <p>Patient has been informed and has agreed to proceed with recording and transcription.</p>
+            <div style="margin-top:16px;">
+              <strong>{{consentInfo}}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-cog"></i> Transcription Mode
+            </h3>
+          </div>
+          <div class="radio-group">
+            <label class="radio-option">
+              <input type="radio" name="mode" value="traditional" checked>
+              Traditional Recording
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="mode" value="realtime">
+              Real-time ASR
+            </label>
+          </div>
+        </div>
+
+        <div class="recording-controls">
+          <button class="btn btn-success btn-lg" (click)="startRecording()">
+            <i class="fas fa-play"></i> Start Recording
+          </button>
+          <button class="btn btn-warning btn-lg" disabled>
+            <i class="fas fa-pause"></i> Pause
+          </button>
+          <button class="btn btn-danger btn-lg" disabled>
+            <i class="fas fa-stop"></i> Stop
+          </button>
+        </div>
+
+        <div class="transcription-display" [class.recording]="isRecording" id="transcriptionDisplay">
+          <div class="recording-indicator" *ngIf="isRecording">
+            <div class="recording-dot"></div>
+            RECORDING - <span id="recordingTime">{{recordingTime}}</span>
+          </div>
+          <div class="transcription-text">
+            <span id="finalText">{{finalText}}</span>
+            <span class="partial-text" id="partialText">{{partialText}}</span>
+          </div>
+        </div>
+
+        <div class="progress-steps">
+          <div class="step active">
+            <div class="step-circle">1</div>
+            <div class="step-label">Record</div>
+          </div>
+          <div class="step">
+            <div class="step-circle">2</div>
+            <div class="step-label">Transcribe</div>
+          </div>
+          <div class="step">
+            <div class="step-circle">3</div>
+            <div class="step-label">Clean</div>
+          </div>
+          <div class="step">
+            <div class="step-circle">4</div>
+            <div class="step-label">Generate Note</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Upload Tab -->
+      <div [hidden]="activeTab!=='upload'">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-cloud-upload-alt"></i> Upload Audio File
+            </h3>
+          </div>
+          <div class="upload-area" style="border: 2px dashed var(--border-color); border-radius: 8px; padding: 48px; text-align: center; cursor: pointer;">
+            <i class="fas fa-cloud-upload-alt" style="font-size: 48px; color: var(--text-secondary); margin-bottom: 16px;"></i>
+            <p style="color: var(--text-secondary); margin-bottom: 16px;">Drag and drop your audio file here, or click to browse</p>
+            <button class="btn btn-primary">Choose File</button>
+            <p style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">Supported formats: WAV, MP3, M4A</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- View Tab -->
+      <div [hidden]="activeTab!=='view'">
+        <div class="alert alert-info">
+          <i class="fas fa-info-circle"></i>
+          Select a WAV file to view its transcription
+        </div>
+      </div>
+
+      <!-- Compare Tab -->
+      <div [hidden]="activeTab!=='compare'">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-balance-scale"></i> Select Models to Compare
+            </h3>
+          </div>
+          <div class="comparison-container">
+            <div class="comparison-box">
+              <div class="comparison-header">Model 1</div>
+              <div class="form-group">
+                <label class="form-label">Model Type</label>
+                <select class="form-control">
+                  <option>Vosk</option>
+                  <option>Whisper</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Model Size</label>
+                <select class="form-control">
+                  <option>Small</option>
+                  <option>Base</option>
+                  <option>Medium</option>
+                </select>
+              </div>
+            </div>
+            <div class="comparison-box">
+              <div class="comparison-header">Model 2</div>
+              <div class="form-group">
+                <label class="form-label">Model Type</label>
+                <select class="form-control">
+                  <option>Whisper</option>
+                  <option>Vosk</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Model Size</label>
+                <select class="form-control">
+                  <option>Tiny</option>
+                  <option>Base</option>
+                  <option>Medium</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-lg" style="margin-top: 24px;">
+            <i class="fas fa-play"></i> Run Comparison
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
