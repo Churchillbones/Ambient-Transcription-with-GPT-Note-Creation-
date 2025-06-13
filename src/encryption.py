@@ -4,12 +4,12 @@ import tempfile
 from pathlib import Path
 from typing import Tuple
 from contextlib import contextmanager
-import streamlit as st # Needed for st.cache_data and st.warning
+from functools import lru_cache
 from cryptography.fernet import Fernet
 from .config import config, logger # Import config and logger
 
 # --- Encryption Functions ---
-@st.cache_data # Keep caching for the key retrieval
+@lru_cache(maxsize=None)
 def get_encryption_key() -> bytes:
     """Get or generate an encryption key."""
     key_file = config["KEY_DIR"] / "encryption_key.bin"
@@ -210,8 +210,7 @@ def secure_audio_processing(audio_path: str, use_encryption: bool):
             enc_path, encryption_success = encrypt_wav_file(audio_path, key)
             if not encryption_success:
                 # If encryption fails, warn and proceed with original unencrypted path
-                st.warning(f"Failed to encrypt {Path(audio_path).name}. Processing unencrypted audio.")
-                logger.warning(f"Encryption failed for {audio_path}. Using original path.")
+                logger.warning(f"Failed to encrypt {Path(audio_path).name}. Processing unencrypted audio.")
                 # No need to decrypt, yield original path
                 yield audio_path
                 return # Exit context manager early
@@ -223,7 +222,7 @@ def secure_audio_processing(audio_path: str, use_encryption: bool):
             decrypted_temp_path, decryption_success = decrypt_to_wav(enc_path, key)
             if not decryption_success:
                 # If decryption fails (unexpectedly, as we just encrypted it), warn and fallback
-                st.warning("Decryption failed after encryption. This is unexpected. Processing unencrypted audio.")
+                logger.warning("Decryption failed after encryption. Processing unencrypted audio.")
                 logger.error(f"Decryption failed for {enc_path} immediately after creation. Using original path {audio_path}.")
                 # Yield original path as fallback
                 yield audio_path
@@ -243,7 +242,7 @@ def secure_audio_processing(audio_path: str, use_encryption: bool):
     except Exception as e:
         # Catch any other exceptions during the setup phase (e.g., key generation)
         logger.error(f"Error during secure audio processing setup for {audio_path}: {e}")
-        st.error(f"An error occurred during secure audio setup: {e}")
+        logger.error(f"An error occurred during secure audio setup: {e}")
         # In case of error during setup, yield the original path as a last resort? Or raise?
         # Raising might be safer to prevent processing potentially compromised data.
         raise # Re-raise the exception to halt processing

@@ -2,7 +2,7 @@
 
 ## Description
 
-A Streamlit web application designed for medical professionals. It facilitates the recording or uploading of patient audio encounters, transcribes the audio using various Automatic Speech Recognition (ASR) models (including local Vosk, OpenAI API via Azure, local Whisper models, and local LLMs via Ollama), and generates structured clinical notes based on customizable templates using GPT models (via Azure OpenAI). The app features optional encryption for sensitive data and allows for comparison between different transcription models.
+This project provides an Angular based frontend and a FastAPI backend. The application allows medical professionals to upload or record audio encounters, transcribe the audio using various Automatic Speech Recognition (ASR) models, and generate structured clinical notes using GPT models via Azure OpenAI. Optional encryption of recordings is supported and different transcription models can be compared.
 
 ## Features
 
@@ -56,7 +56,7 @@ The `setup.bat` script automates most of the setup process.
     *   Check for FFmpeg and optionally download/install it.
     *   Check for Vosk models and optionally download a default small English model.
     *   Create a template `.env` file if one doesn't exist.
-    *   Attempt to launch the application (`streamlit run app.py`).
+    *   Attempt to launch the backend API (`uvicorn backend.main:app --reload`).
 
     *Note:* If `setup.bat` fails during dependency installation (e.g., PyAudio), you might need to install system prerequisites manually (like PortAudio) or use alternative installation methods mentioned in the script's output.
 
@@ -130,9 +130,15 @@ If you're not using Windows or prefer manual setup:
    python ollama_bridge.py
    ```
 
-9. In a separate terminal, run the app:
+9. In a separate terminal, start the backend API:
    ```bash
-   streamlit run app.py
+   uvicorn backend.main:app --reload
+   ```
+10. Start the Angular frontend:
+   ```bash
+   cd frontend
+   npm install
+   npm start
    ```
 
 ## Configuration
@@ -159,16 +165,21 @@ If you're not using Windows or prefer manual setup:
     ```bash
     .\venv\Scripts\activate
     ```
-3.  **Start the App:** Run the application using the `Start_app.bat` script (assuming it just runs `streamlit run app.py` within the venv) or directly with Streamlit:
+3.  **Start the Backend:** Run the FastAPI server:
     ```bash
-    streamlit run app.py
+    uvicorn backend.main:app --reload
     ```
-    *(Note: You might need to read `Start_app.bat` to confirm its exact function if it differs from `setup.bat`'s final step).*
-4.  **Access:** Open your web browser and navigate to the local URL provided by Streamlit (typically `http://localhost:8501`).
+4.  **Start the Frontend:** In the `frontend` folder run:
+    ```bash
+    npm install
+    npm start
+    ```
+    The Angular development server runs on `http://localhost:4200`.
 
 ## Key Dependencies
 
-*   Streamlit: Web application framework.
+*   Angular: Frontend framework.
+*   FastAPI/Uvicorn: Backend API server.
 *   PyAudio/wave: Audio recording and handling.
 *   Vosk: Offline speech recognition.
 *   OpenAI: Azure OpenAI API client.

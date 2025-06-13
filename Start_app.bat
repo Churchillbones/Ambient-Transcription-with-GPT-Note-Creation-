@@ -23,7 +23,7 @@ start "Ollama Bridge" cmd /c "call venv\Scripts\activate.bat && python ollama_br
 echo [INFO] Waiting for API bridge to start...
 timeout /t 3 > nul
 
-echo [INFO] Starting Medical Transcription App...
-streamlit run app.py
+echo [INFO] Starting Backend API...
+uvicorn backend.main:app --reload
 
 ENDLOCAL
