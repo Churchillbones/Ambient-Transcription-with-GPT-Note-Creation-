@@ -60,9 +60,9 @@ class TranscriberFactory(IServiceFactory[ITranscriber]):
         # itself relies on this factory during application import time.
         from importlib import import_module
 
-        _Vosk = import_module("src.asr.vosk").VoskTranscriber
-        _Whisper = import_module("src.asr.whisper").WhisperTranscriber
-        _AzureSpeech = import_module("src.asr.azure_speech").AzureSpeechTranscriber
+        _Vosk = import_module("core.providers.vosk_transcriber").VoskTranscriberProvider
+        _Whisper = import_module("core.providers.whisper_transcriber").WhisperTranscriberProvider
+        _AzureSpeech = import_module("core.providers.azure_speech_transcriber").AzureSpeechTranscriberProvider
 
         self._providers.update(
             {
