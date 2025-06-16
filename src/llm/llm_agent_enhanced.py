@@ -8,7 +8,9 @@ import json
 from typing import Optional, Dict, List, Any, Tuple
 from dataclasses import dataclass # Removed 'field' as it's not used in this version
 from enum import Enum
-from openai import AzureOpenAI, AsyncAzureOpenAI # AzureOpenAI is not used, but kept from original
+from core.bootstrap import container
+from core.factories.llm_factory import LLMProviderFactory
+from core.exceptions import ConfigurationError
 import time
 import re # Import re for JSON extraction
 
@@ -44,10 +46,12 @@ class MedicalNoteAgentPipeline:
     """Simplified multi-agent pipeline focused on note quality"""
 
     def __init__(self, api_key: str, azure_endpoint: str, api_version: str, model_name: str):
-        self.client = AsyncAzureOpenAI(
+        self._provider = container.resolve(LLMProviderFactory).create(
+            "azure_openai",
             api_key=api_key,
+            endpoint=azure_endpoint,
+            model_name=model_name,
             api_version=api_version,
-            azure_endpoint=azure_endpoint
         )
         self.model_name = model_name
         self.agents = self._initialize_agents() # Corrected: call the method
@@ -132,30 +136,20 @@ class MedicalNoteAgentPipeline:
         else:
             messages.append({"role": "user", "content": input_text})
 
-        response_format_param = None
-        if is_json_output_expected and (agent == SpecializedAgent.MEDICAL_EXTRACTOR or agent == SpecializedAgent.QUALITY_REVIEWER) :
-            # Only use response_format for agents explicitly designed to output JSON and if model supports it.
-            # GPT-4 Turbo and newer models generally support this.
-            # Check your Azure deployment capabilities. If not supported, remove this.
-            response_format_param = {"type": "json_object"}
-
-
         try:
-            logger.debug(f"Calling agent {agent.value}. Model: {self.model_name}. JSON output expected: {is_json_output_expected}. Response format param: {response_format_param}")
+            logger.debug(
+                "Calling agent %s. Model: %s. JSON expected: %s",
+                agent.value,
+                self.model_name,
+                is_json_output_expected,
+            )
 
-            completion_params = {
-                "model": self.model_name,
-                "messages": messages,
-                "temperature": 0.2, # Lower for more deterministic output
-                "max_tokens": 3000, # Increased slightly
-                "timeout": 120.0, # Added timeout
-            }
-            if response_format_param:
-                completion_params["response_format"] = response_format_param
+            # Combine system + user messages into a single prompt
+            prompt_parts = [f"System: {messages[0]['content']}"] + [m['content'] for m in messages[1:]]
+            prompt = "\n\n".join(prompt_parts)
 
-            response = await self.client.chat.completions.create(**completion_params) # type: ignore
+            raw_response_text = await self._provider.generate_completion(prompt)
 
-            raw_response_text = response.choices[0].message.content.strip() if response.choices[0].message.content else ""
             logger.debug(f"Agent {agent.value} raw response length: {len(raw_response_text)}")
 
             if is_json_output_expected:
@@ -200,9 +194,9 @@ class MedicalNoteAgentPipeline:
 
             return raw_response_text # Return raw if not JSON expected
 
-        except asyncio.TimeoutError:
-            logger.error(f"Agent {agent.value} call timed out.")
-            raise TimeoutError(f"Agent {agent.value} call timed out.")
+        except ConfigurationError as e:
+            logger.error(f"Provider configuration error for agent {agent.value}: {e}")
+            raise
         except Exception as e:
             logger.error(f"Agent {agent.value} call failed: {e}", exc_info=True)
             raise # Re-raise the original exception

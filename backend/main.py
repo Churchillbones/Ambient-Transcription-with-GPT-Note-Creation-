@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 import tempfile
 import asyncio
+# ensure DI bootstrap
+import core.bootstrap  # noqa: F401
 
 from src.asr.transcription import transcribe_audio
 from src.llm.llm_integration import generate_note_router

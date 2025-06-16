@@ -23,6 +23,7 @@ bleach>=6.0.0
 # API and data handling
 requests>=2.31.0
 openai>=1.3.0
+openai-agents
 
 # Configuration
 python-dotenv>=1.0.0
@@ -32,3 +33,7 @@ flask>=2.0.0
 
 # Monitoring (optional)
 psutil>=5.9.0
+
+# Additional dependencies
+python-multipart
+pydantic-settings

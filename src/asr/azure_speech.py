@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+import asyncio
 
 from .base import Transcriber
 from ..config import config, logger
@@ -26,15 +27,15 @@ class AzureSpeechTranscriber(Transcriber):
     def __post_init__(self) -> None:
         self.language = self.language or "en-US"
 
-    def _get_openai_client(self):
-        try:
-            from openai import AzureOpenAI  # type: ignore
-        except Exception:  # pragma: no cover - openai not installed
-            raise ImportError("OpenAI SDK not installed")
-        return AzureOpenAI(
+    def _get_provider(self):  # noqa: D401
+        from core.bootstrap import container
+        from core.factories.llm_factory import LLMProviderFactory
+        return container.resolve(LLMProviderFactory).create(
+            "azure_openai",
             api_key=self.openai_key,
+            endpoint=self.openai_endpoint,
+            model_name=str(config.get("MODEL_NAME")),
             api_version=str(config.get("API_VERSION")),
-            azure_endpoint=self.openai_endpoint,
         )
 
     # ------------------------------------------------------------------
@@ -42,24 +43,18 @@ class AzureSpeechTranscriber(Transcriber):
         if not self.openai_key or not self.openai_endpoint or config.get("SKIP_OPENAI_SUMMARIZATION", False):
             return transcript
         try:
-            client = self._get_openai_client()
-        except ImportError:
-            logger.warning("OpenAI SDK not installed. Skipping post-processing.")
-            return transcript
-        except Exception as exc:  # pragma: no cover - client init failure
-            logger.error(f"Failed to create OpenAI client: {exc}")
+            provider = self._get_provider()
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Failed to create provider for post-processing: {exc}")
             return transcript
         try:
             system_prompt = (
                 "Refine this raw audio transcript for clarity and medical context. "
                 "If it seems like a summary already, return it as is or improve its structure slightly."
             )
-            chat_resp = client.chat.completions.create(
-                model=str(config.get("MODEL_NAME")),
-                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": transcript}],
-                max_tokens=int(len(transcript) * 1.2) + 300,
-            )
-            return chat_resp.choices[0].message.content.strip()
+            prompt = f"{system_prompt}\n\nTRANSCRIPT:\n{transcript}"
+            refined = asyncio.run(provider.generate_completion(prompt))
+            return refined.strip()
         except Exception as e:  # pragma: no cover - API failure
             logger.error(f"Azure OpenAI post-processing error: {e}")
             return transcript

@@ -20,10 +20,14 @@ or the TOKEN_MANAGEMENT_APPROACH environment variable ('chunking' or 'two_stage'
 Both approaches use the tiktoken library for accurate token counting.
 """
 
-import tiktoken
+import asyncio
 from typing import List, Dict, Any, Optional
-import openai
-from openai import AzureOpenAI, OpenAIError
+
+import tiktoken
+
+from core.bootstrap import container
+from core.factories.llm_factory import LLMProviderFactory
+from core.exceptions import ConfigurationError
 
 from ..config import config, logger
 
@@ -129,12 +133,20 @@ def generate_note_from_chunked_transcript(transcript: str, prompt_template: str,
     Returns:
         Generated clinical note
     """
-    # Configure Azure OpenAI client
-    client = AzureOpenAI(
+    # Lazily create provider once for all completions in this helper
+    provider = container.resolve(LLMProviderFactory).create(
+        "azure_openai",
         api_key=azure_api_key,
+        endpoint=azure_endpoint,
+        model_name=deployment_name,
         api_version=api_version,
-        azure_endpoint=azure_endpoint
     )
+
+    def _complete(prompt: str) -> str:
+        try:
+            return asyncio.run(provider.generate_completion(prompt))
+        except Exception as exc:  # noqa: BLE001
+            raise ConfigurationError(f"Provider completion failed: {exc}") from exc
     
     # Estimate tokens in prompt template (to reserve space)
     prompt_template_tokens = count_tokens(prompt_template, model)
@@ -157,14 +169,7 @@ def generate_note_from_chunked_transcript(transcript: str, prompt_template: str,
     if len(chunks) == 1:
         try:
             prompt = prompt_template.replace("{transcript}", chunks[0])
-            response = client.chat.completions.create(
-                model=deployment_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=3000,  # Safe limit for completion
-                n=1
-            )
-            return response.choices[0].message.content
+            return _complete(prompt)
         except Exception as e:
             logger.error(f"Error generating note: {str(e)}")
             return f"Error generating note: {str(e)}"
@@ -179,14 +184,7 @@ def generate_note_from_chunked_transcript(transcript: str, prompt_template: str,
             prompt = prompt.replace("{part_num}", str(i+1))
             prompt = prompt.replace("{total_parts}", str(len(chunks)))
             
-            response = client.chat.completions.create(
-                model=deployment_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=2000,  # Reduced for safety with multiple chunks
-                n=1
-            )
-            chunk_notes.append(response.choices[0].message.content)
+            chunk_notes.append(_complete(prompt))
         except Exception as e:
             logger.error(f"Error processing chunk {i+1}: {str(e)}")
             chunk_notes.append(f"[Error processing chunk {i+1}: {str(e)}]")
@@ -201,14 +199,7 @@ Please integrate these sections into one cohesive clinical note, removing any re
 
 Please provide a single, integrated clinical note from all these sections."""
 
-        response = client.chat.completions.create(
-            model=deployment_name,
-            messages=[{"role": "user", "content": integration_prompt}],
-            temperature=0.3,
-            max_tokens=2500,
-            n=1
-        )
-        return response.choices[0].message.content
+        return _complete(integration_prompt)
     except Exception as e:
         logger.error(f"Error in final integration: {str(e)}")
         # Fall back to joining the chunks if integration fails
@@ -236,25 +227,22 @@ def generate_note_with_two_stage_summarization(transcript: str, prompt_template:
     Returns:
         Generated clinical note
     """
-    # Configure Azure OpenAI client
-    client = AzureOpenAI(
+    # Lazily create provider once for all completions in this helper
+    provider = container.resolve(LLMProviderFactory).create(
+        "azure_openai",
         api_key=azure_api_key,
+        endpoint=azure_endpoint,
+        model_name=deployment_name,
         api_version=api_version,
-        azure_endpoint=azure_endpoint
     )
+
+    _complete = lambda p: asyncio.run(provider.generate_completion(p))  # type: ignore
     
     # If transcript is short enough, process normally
     if count_tokens(transcript, model) < 2500:
         try:
             prompt = prompt_template.replace("{transcript}", transcript)
-            response = client.chat.completions.create(
-                model=deployment_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=3000,
-                n=1
-            )
-            return response.choices[0].message.content
+            return _complete(prompt)
         except Exception as e:
             logger.error(f"Error generating note: {str(e)}")
             return f"Error generating note: {str(e)}"
@@ -287,14 +275,7 @@ Provide a concise summary with the most important clinical details only."""
     for i, chunk in enumerate(chunks):
         try:
             prompt = summary_prompt.replace("{section}", chunk)
-            response = client.chat.completions.create(
-                model=deployment_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=1000,  # Shorter summaries
-                n=1
-            )
-            section_summaries.append(response.choices[0].message.content)
+            section_summaries.append(_complete(prompt))
         except Exception as e:
             logger.error(f"Error summarizing section {i+1}: {str(e)}")
             # Include a marker but also some of the original text to not lose information
@@ -315,14 +296,7 @@ SUMMARIZED ENCOUNTER INFORMATION:
 
 Create a complete, well-structured clinical note based on these summaries."""
 
-        response = client.chat.completions.create(
-            model=deployment_name,
-            messages=[{"role": "user", "content": final_prompt}],
-            temperature=0.3,
-            max_tokens=3000,
-            n=1
-        )
-        return response.choices[0].message.content
+        return _complete(final_prompt)
     except Exception as e:
         logger.error(f"Error in final note generation: {str(e)}")
         return f"Error generating final note: {str(e)}\n\nSummarized content:\n{combined_summaries}"
@@ -343,20 +317,15 @@ def generate_coding_and_review(
         return "No note provided for coding analysis."
     prompt = f"""
 E/M Coding: on separate lines recommend insurance-defensible e/m coding based on documented a) mdm and b) time.  Briefly summarize justification for each as specifically documented in the note.   Time coding for established patients: total 10-19 minutes = 99212, 20-29 minutes = 99213, 30-39 minutes = 99214, and 40-54 minutes = 99215.  If greater than 54 minutes, code 99417 may be added for each additional fifteen minutes.  For new patients, time coding is 15-29 minutes = 99202, 30-44 minutes = 99203, 45-59 minutes = 99204, and 60-74 minutes = 99205. If greater than 74 minutes, code 99417 may be added for each additional fifteen minutes. 3) Recommend icd-10 and snomed codes, placing both on the same line for each separate condition. Include BOTH codes AND DESCRIPTIVE TEXT FOR EACH.  Ensure in each each match of icd-10 and snomed codes that the identifying text for icd-10 matches the text for snomed.  Specifically identify and note conditions considered high-risk for coding. Include only icd-10 and snomed codes that are mentioned in the text of the note, NOT in an inserted problem list.  Include items from the problem list ONLY if they are ALSO discussed in the note.  4) Recommend CPT codes for any noted procedures.  For EKGs please specifically include codes for test performance and provider reading.  Specifically evaluate then include, only when clearly relevant, potential CPT procedure modifiers (25, 59, 76 or 77).  Specifically document why such modifiers are relevant to this encounter.  Especially ensure CPT modifier 59 is identified if procedures were performed at different sites during the encounter.  5) Identify comorbidities and risk adjustment codes.  6) Review and identify any relevant social determinants of health codes (Z55-Z65). 7) Summarize at least four alternate diagnoses considered and explain why they weren't actioned.  8) Review your responses 1-7 from a payer perspective, noting whether a payer might dispute e/m or diagnosis codes due to insufficient documentation in the note.  Also suggest what might be improved in the note to counter the payer's perspective.\n\nCLINICAL NOTE:\n{note}\n"""
-    client = AzureOpenAI(
+    provider = container.resolve(LLMProviderFactory).create(
+        "azure_openai",
         api_key=azure_api_key,
+        endpoint=azure_endpoint,
+        model_name=deployment_name,
         api_version=api_version,
-        azure_endpoint=azure_endpoint
     )
     try:
-        response = client.chat.completions.create(
-            model=deployment_name,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=3000,
-            n=1
-        )
-        return response.choices[0].message.content
+        return _complete(prompt)
     except Exception as e:
         logger.error(f"Error generating coding analysis: {str(e)}")
         return f"Error generating coding analysis: {str(e)}"

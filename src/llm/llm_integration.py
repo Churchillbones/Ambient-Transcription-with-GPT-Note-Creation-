@@ -1,7 +1,6 @@
 import asyncio
 import requests
-from typing import Optional, Dict, Tuple, List
-from openai import AzureOpenAI, OpenAIError
+from typing import Optional, Dict, Tuple, List, Any
 
 from ..config import config, logger
 from ..utils import sanitize_input
@@ -12,6 +11,10 @@ from .token_management import (
 )
 from .llm_agent_enhanced import generate_note_agent_based as perform_agent_generation
 # Ensure this is placed with other . (relative) imports
+
+from core.bootstrap import container  # late import
+from core.factories.llm_factory import LLMProviderFactory
+from core.exceptions import ConfigurationError
 
 
 async def generate_note_router(
@@ -140,14 +143,28 @@ async def clean_transcription(
     Returns:
         Cleaned transcription text with potential highlights
     """
-    if not transcript:
-        logger.warning("clean_transcription called with empty transcript.")
-        return "ERROR: No transcript provided for cleanup."
-
     sanitized_transcript = sanitize_input(transcript)
     if not sanitized_transcript:
         logger.warning("Transcript became empty after sanitization in clean_transcription.")
         return "ERROR: Transcript content is invalid."
+
+    # Attempt DI provider path first
+    try:
+        llm_factory = container.resolve(LLMProviderFactory)
+        provider_type = "local" if use_local else "azure_openai"
+        provider_kwargs: dict[str, Any] = {}
+        if use_local:
+            provider_kwargs = {"model": local_model} if local_model else {}
+        else:
+            provider_kwargs = {
+                "api_key": api_key,
+                "endpoint": azure_endpoint,
+                "model_name": azure_model_name,
+                "api_version": azure_api_version,
+            }
+        provider = llm_factory.create(provider_type, **provider_kwargs)  # type: ignore[arg-type]
+    except Exception as e:
+        logger.debug(f"LLMProviderFactory not used for cleanup: {e}")
 
     # Prepare the cleanup prompt
     if highlight_terms:
@@ -176,28 +193,32 @@ async def clean_transcription(
 
     logger.debug(f"Transcription cleanup prompt (first 100 chars): {prompt[:100]}...")
 
+    if provider is not None:
+        try:
+            return await provider.generate_completion(prompt)
+        except Exception as e:
+            logger.error(f"Provider cleanup failed, falling back to legacy: {e}")
+
     try:
         if use_local:
             # --- Use local LLM model API ---
             if not config["LOCAL_MODEL_API_URL"]:
-                logger.error("Local LLM API URL is not configured.")
-                return sanitized_transcript  # Fall back to original transcript
-
-            # Modify the endpoint to differentiate from note generation
-            cleanup_endpoint = f"{config['LOCAL_MODEL_API_URL'].rstrip('/')}/cleanup"
+                 logger.error("Local LLM API URL is not configured.")
+                 return sanitized_transcript  # Fall back to original
 
             request_payload = {"prompt": prompt}
             if local_model:
                 request_payload["model"] = local_model
                 logger.info(f"Sending cleanup request to local LLM: {local_model}")
             else:
-                logger.info("Sending cleanup request to default local LLM model")
+                 logger.info("Sending cleanup request to default local LLM model")
+
 
             try:
                 # Use asyncio.to_thread for the blocking requests call
                 response = await asyncio.to_thread(
                     lambda: requests.post(
-                        cleanup_endpoint,
+                        config["LOCAL_MODEL_API_URL"],
                         json=request_payload,
                         timeout=30  # Shorter timeout for cleanup vs full note generation
                     )
@@ -231,25 +252,21 @@ async def clean_transcription(
                  logger.warning("Azure endpoint, version, or model name missing for cleanup.")
                  return sanitized_transcript
 
-            client = AzureOpenAI(
+            llm_factory = container.resolve(LLMProviderFactory)
+            provider = llm_factory.create(
+                "azure_openai",
                 api_key=api_key,
-                api_version=azure_api_version, # Use passed param
-                azure_endpoint=azure_endpoint, # Use passed param
-                timeout=30.0  # Shorter timeout for cleanup
+                endpoint=azure_endpoint,
+                model_name=azure_model_name,
+                api_version=azure_api_version,
             )
 
-            logger.info(f"Requesting transcription cleanup from Azure OpenAI model: {azure_model_name}")
-            # Use asyncio.to_thread for the blocking SDK call
-            response = await asyncio.to_thread(
-                lambda: client.chat.completions.create(
-                    model=azure_model_name, # Use passed param
-                    messages=[{"role": "system", "content": prompt}],
-                    temperature=0.3,  # Lower temperature for accuracy
-                    max_tokens=int(len(prompt.split()) * 1.2)  # Should be similar length to input
-                )
+            logger.info(
+                "Requesting transcription cleanup from Azure OpenAI model via provider: %s",
+                azure_model_name,
             )
 
-            cleaned_text = response.choices[0].message.content
+            cleaned_text = await provider.generate_completion(prompt)
             if not cleaned_text:
                 logger.warning("Azure OpenAI returned empty cleaned text.")
                 return sanitized_transcript  # Fall back to original
@@ -257,8 +274,8 @@ async def clean_transcription(
             logger.info("Successfully received cleaned transcription from Azure OpenAI.")
             return cleaned_text.strip()
 
-    except OpenAIError as e:
-        logger.error(f"Azure OpenAI API error during transcription cleanup: {e}")
+    except ConfigurationError as e:
+        logger.error(f"Provider configuration error during transcription cleanup: {e}")
         return sanitized_transcript  # Fall back to original
     except Exception as e:
         logger.error(f"Unexpected error in transcription cleanup: {e}")
@@ -285,6 +302,27 @@ async def generate_note(
     if not sanitized_transcript:
         logger.warning("Transcript became empty after sanitization in generate_note.")
         return "Error: Transcript content is invalid."
+
+    # Try new LLMProviderFactory path first (Phase-1 wiring)
+    try:
+        llm_factory = container.resolve(LLMProviderFactory)
+        provider_type = "local" if use_local else "azure_openai"
+        provider_kwargs: dict[str, Any] = {}
+        if use_local:
+            provider_kwargs = {"model": local_model} if local_model else {}
+        else:
+            provider_kwargs = {
+                "api_key": api_key,
+                "endpoint": azure_endpoint,
+                "model_name": azure_model_name,
+                "api_version": azure_api_version,
+            }
+
+        provider = llm_factory.create(provider_type, **provider_kwargs)  # type: ignore[arg-type]
+
+        # Build prompt below then call provider.generate_note()
+    except Exception:
+        provider = None  # Fallback to legacy logic
 
     # Determine the final prompt, incorporating patient data if available
     final_prompt_template = prompt_template or "Create a clinical note from the following transcription."
@@ -317,8 +355,15 @@ async def generate_note(
         else:
              prompt = f"{final_prompt_template}\n\n{sanitized_transcript}"
 
-
     logger.debug(f"Final prompt for note generation (first 100 chars): {prompt[:100]}...")
+
+    # If provider resolved, delegate directly and return
+    if provider is not None:
+        try:
+            return await provider.generate_note(transcript=sanitized_transcript, template=final_prompt_template)
+        except Exception as e:
+            logger.error(f"LLMProviderFactory path failed, falling back to legacy: {e}")
+
     try:
         if use_local:
             # --- Use local LLM model API ---
@@ -416,35 +461,30 @@ async def generate_note(
                     return note
             
             # For smaller transcripts, use the standard approach
-            client = AzureOpenAI(
+            llm_factory = container.resolve(LLMProviderFactory)
+            provider = llm_factory.create(
+                "azure_openai",
                 api_key=api_key,
+                endpoint=azure_endpoint,
+                model_name=azure_model_name,
                 api_version=azure_api_version,
-                azure_endpoint=azure_endpoint,
-                timeout=60.0 # Increased timeout
             )
 
-            logger.info(f"Requesting note generation from Azure OpenAI model: {azure_model_name}")
-            # Use asyncio.to_thread for the blocking SDK call
-            response = await asyncio.to_thread(
-                lambda: client.chat.completions.create(
-                    model=azure_model_name,
-                    messages=[{"role": "system", "content": prompt}],
-                    temperature=0.3,
-                    max_tokens=3000  # Safe token limit for smaller transcripts
-                )
+            logger.info(
+                "Requesting note generation from Azure provider model: %s", azure_model_name
             )
 
-            note = response.choices[0].message.content
+            note = await provider.generate_completion(prompt)
             if not note:
                  logger.warning("Azure OpenAI returned an empty note.")
                  return "Note generation result was empty."
 
-            logger.info("Successfully received note from Azure OpenAI.")
+            logger.info("Successfully received note from Azure provider.")
             return note.strip()
 
-    except OpenAIError as e:
-        logger.error(f"Azure OpenAI API error during note generation: {e}")
-        return f"Error generating note via Azure: {e}"
+    except ConfigurationError as e:
+        logger.error(f"Provider configuration error during note generation: {e}")
+        return f"Error generating note via provider: {e}"
     except Exception as e:
         logger.error(f"Unexpected error generating note: {e}")
         return f"Error generating note: An unexpected error occurred."
@@ -488,7 +528,7 @@ async def generate_gpt_speaker_tags(
     """Use GPT to identify speakers and tag the transcript."""
     if not transcript:
         logger.warning("generate_gpt_speaker_tags called with empty transcript.")
-        return "ERROR: No transcript provided for speaker tagging."
+        return "ERROR: No transcript provided for speaker tagging. Applying basic diarization."
     if not api_key:
         logger.warning("Azure API key not provided for GPT speaker tagging. Applying basic diarization.")
         return apply_speaker_diarization(transcript)
@@ -511,37 +551,29 @@ async def generate_gpt_speaker_tags(
         f"{sanitized_transcript}"
     )
 
-    logger.debug("Requesting GPT speaker tagging from Azure OpenAI.")
+    logger.debug("Requesting GPT speaker tagging via provider.")
 
     try:
-        client = AzureOpenAI(
+        llm_factory = container.resolve(LLMProviderFactory)
+        provider = llm_factory.create(
+            "azure_openai",
             api_key=api_key,
-            api_version=azure_api_version, # Use passed param
-            azure_endpoint=azure_endpoint, # Use passed param
-            timeout=45.0 # Moderate timeout for tagging
+            endpoint=azure_endpoint,
+            model_name=azure_model_name,
+            api_version=azure_api_version,
         )
 
-        # Use asyncio.to_thread for the blocking SDK call
-        response = await asyncio.to_thread(
-            lambda: client.chat.completions.create(
-                model=azure_model_name, # Use passed param
-                messages=[{"role": "system", "content": prompt}],
-                temperature=0.2, # Low temperature for factual tagging
-                max_tokens=int(len(prompt.split()) * 1.3) # Allow slight expansion for tags
-            )
-        )
-
-        tagged_text = response.choices[0].message.content
+        tagged_text = await provider.generate_completion(prompt)
         if not tagged_text:
             logger.warning("GPT speaker tagging returned empty result. Applying basic diarization.")
             return apply_speaker_diarization(transcript) # Fallback
 
-        logger.info("Successfully received GPT speaker tags from Azure OpenAI.")
+        logger.info("Successfully received GPT speaker tags from provider.")
         return tagged_text.strip()
 
-    except OpenAIError as e:
-        logger.error(f"Azure OpenAI API error during GPT speaker tagging: {e}. Applying basic diarization.")
-        return apply_speaker_diarization(transcript) # Fallback
+    except ConfigurationError as e:
+        logger.error(f"Provider configuration error in GPT speaker tagging: {e}. Applying basic diarization.")
+        return apply_speaker_diarization(transcript)
     except Exception as e:
         logger.error(f"Unexpected error in GPT speaker tagging: {e}. Applying basic diarization.")
         return apply_speaker_diarization(transcript) # Fallback

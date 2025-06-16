@@ -4,10 +4,11 @@ import asyncio
 import re
 from typing import Optional
 
-from openai import AzureOpenAI, OpenAIError
-
 from ..config import config, logger
 from ..utils import sanitize_input
+from core.bootstrap import container
+from core.factories.llm_factory import LLMProviderFactory
+from core.exceptions import ConfigurationError
 
 
 class Diarizer:
@@ -51,11 +52,13 @@ class Diarizer:
             logger.warning("Transcript became empty after sanitization.")
             return ""
         try:
-            client = AzureOpenAI(
+            llm_factory = container.resolve(LLMProviderFactory)
+            provider = llm_factory.create(
+                "azure_openai",
                 api_key=api_key,
+                endpoint=endpoint or config["AZURE_ENDPOINT"],
+                model_name=model_name or config["MODEL_NAME"],
                 api_version=api_ver or config["API_VERSION"],
-                azure_endpoint=endpoint or config["AZURE_ENDPOINT"],
-                timeout=30.0,
             )
             prompt = (
                 "System: You are an expert medical transcript editor. Your task is to accurately assign speaker roles (User or Patient) "
@@ -63,21 +66,13 @@ class Diarizer:
                 "Format each utterance clearly as 'Speaker: Text'. If unsure, use 'Unknown Speaker:'.\n\n"
                 "TRANSCRIPT:\n" + sanitized
             )
-            response = await asyncio.to_thread(
-                lambda: client.chat.completions.create(
-                    model=model_name or config["MODEL_NAME"],
-                    messages=[{"role": "system", "content": prompt}],
-                    temperature=0.2,
-                    max_tokens=int(len(sanitized.split()) * 1.5) + 100,
-                )
-            )
-            tagged = response.choices[0].message.content
+            tagged = await provider.generate_completion(prompt)
             if "User:" not in tagged and "Patient:" not in tagged:
                 logger.warning("GPT output missing expected speaker tags. Falling back to basic diarization.")
                 return self.apply(transcript)
             return tagged.strip()
-        except OpenAIError as e:
-            logger.error(f"Azure OpenAI API error during speaker tagging: {e}")
+        except ConfigurationError as e:
+            logger.error(f"Provider configuration error during speaker tagging: {e}")
             return self.apply(transcript)
         except Exception as e:
             logger.error(f"Unexpected error generating speaker tags: {e}")

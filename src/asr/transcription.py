@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, Any
 
-from ..config import config
-from .whisper import WhisperTranscriber
-from .vosk import VoskTranscriber
-from .azure_speech import AzureSpeechTranscriber, AzureWhisperTranscriber
+from core.bootstrap import container  # DI bootstrap
+from core.factories.transcriber_factory import TranscriberFactory
 
 
 def transcribe_audio(
@@ -26,40 +24,21 @@ def transcribe_audio(
     if not wav_file.exists():
         return f"ERROR: Audio file not found: {audio_path}"
 
-    model_id = model.lower()
-    lang_code = language or "en-US"
+    factory = container.resolve(TranscriberFactory)
 
-    if model_id.startswith("whisper:"):
-        size = model_id.split(":", 1)[1]
-        try:
-            transcriber = WhisperTranscriber(size)
-        except ValueError as e:
-            return f"ERROR: {e}"
-        return transcriber.transcribe(wav_file)
+    provider_type = model.lower()
+    options: dict[str, Any] = {}
 
-    transcribers = {
-        "azure_speech": AzureSpeechTranscriber(
-            speech_key=azure_key or "",
-            speech_endpoint=azure_endpoint or "",
-            openai_key=openai_key,
-            openai_endpoint=openai_endpoint,
-            language=lang_code,
-            return_raw=return_raw,
-        ),
-        "vosk_model": VoskTranscriber(model_path or str(config["MODEL_DIR"] / "vosk-model-small-en-us-0.15")),
-        "vosk_small": VoskTranscriber(str(config["MODEL_DIR"] / "vosk-model-small-en-us-0.15")),
-        "azure_whisper": AzureWhisperTranscriber(
-            api_key=openai_key or "",
-            endpoint=openai_endpoint or "",
-            language=lang_code,
-        ),
-    }
+    if provider_type.startswith("whisper:"):
+        provider_type = "whisper"
+        options["size"] = model.split(":", 1)[1]
+    elif provider_type == "vosk_model" and model_path:
+        provider_type = "vosk"
+        options["model_path"] = model_path
 
-    transcriber = transcribers.get(model_id)
-    if transcriber:
-        return transcriber.transcribe(wav_file)
+    try:
+        transcriber = factory.create(provider_type, **options)
+    except Exception as exc:
+        return f"ERROR: {exc}"
 
-    return (
-        f"ERROR: Unknown ASR model '{model}'. Supported: whisper:<size>, azure_speech, "
-        "vosk_model, vosk_small, azure_whisper."
-    )
+    return transcriber.transcribe(wav_file)
