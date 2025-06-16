@@ -23,96 +23,22 @@ Both approaches use the tiktoken library for accurate token counting.
 import asyncio
 from typing import List, Dict, Any, Optional
 
-import tiktoken
-
 from core.bootstrap import container
 from core.factories.llm_factory import LLMProviderFactory
 from core.exceptions import ConfigurationError
+from core.interfaces.token_service import ITokenService
 
 from ..config import config, logger
 
-def count_tokens(text: str, model: str = "gpt-4o") -> int:
-    """Count the number of tokens in a string."""
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-        return len(encoding.encode(text))
-    except Exception as e:
-        # If tiktoken doesn't directly support gpt-4o model name yet,
-        # fall back to cl100k_base which is used by GPT-4 models
-        try:
-            encoding = tiktoken.get_encoding("cl100k_base")  # GPT-4 family encoding
-            return len(encoding.encode(text))
-        except Exception as nested_error:
-            # Final fallback to approximate counting
-            logger.warning(f"Token counting error: {e} -> {nested_error}. Using approximate count.")
-            return len(text.split()) * 1.3  # Rough approximation
+_token_service: ITokenService = container.resolve(ITokenService)
 
-def chunk_transcript(transcript: str, max_chunk_tokens: int = 2048, 
-                     model: str = "gpt-4o") -> List[str]:
-    """Split transcript into chunks that fit within token limits."""
-    if not transcript:
-        return []
-        
-    # Count tokens in the transcript
-    tokens = count_tokens(transcript, model)
-    
-    # If transcript fits in one chunk, return it
-    if tokens <= max_chunk_tokens:
-        return [transcript]
-    
-    # Otherwise, split into chunks
-    chunks = []
-    sentences = transcript.split(". ")
-    current_chunk = ""
-    current_tokens = 0
-    
-    for sentence in sentences:
-        # Add period back except for the last sentence if it doesn't have one
-        if sentence and not sentence.endswith("."):
-            sentence = sentence + "."
-            
-        sentence_tokens = count_tokens(sentence, model)
-        
-        # If single sentence exceeds limit, we need to split it further
-        if sentence_tokens > max_chunk_tokens:
-            logger.warning(f"Very long sentence found ({sentence_tokens} tokens). Splitting.")
-            if current_chunk:
-                chunks.append(current_chunk)
-                current_chunk = ""
-                current_tokens = 0
-            
-            # Split long sentence into smaller parts
-            words = sentence.split()
-            temp_segment = ""
-            temp_tokens = 0
-            
-            for word in words:
-                word_tokens = count_tokens(word + " ", model)
-                if temp_tokens + word_tokens > max_chunk_tokens:
-                    chunks.append(temp_segment)
-                    temp_segment = word + " "
-                    temp_tokens = word_tokens
-                else:
-                    temp_segment += word + " "
-                    temp_tokens += word_tokens
-            
-            if temp_segment:
-                current_chunk = temp_segment
-                current_tokens = temp_tokens
-        
-        # Normal case: check if adding sentence exceeds limit
-        elif current_tokens + sentence_tokens > max_chunk_tokens:
-            chunks.append(current_chunk)
-            current_chunk = sentence + " "
-            current_tokens = sentence_tokens
-        else:
-            current_chunk += sentence + " "
-            current_tokens += sentence_tokens
-    
-    if current_chunk:
-        chunks.append(current_chunk)
-    
-    return chunks
+def count_tokens(text: str, model: str = "gpt-4o") -> int:  # noqa: D401
+    """Forward to configured *ITokenService*."""
+    return _token_service.count(text, model)
+
+def chunk_transcript(transcript: str, max_chunk_tokens: int = 2048, model: str = "gpt-4o") -> List[str]:  # noqa: D401
+    """Forward to configured *ITokenService*."""
+    return _token_service.chunk(transcript, max_chunk_tokens, model)
 
 def generate_note_from_chunked_transcript(transcript: str, prompt_template: str, 
                                           azure_endpoint: str, azure_api_key: str,
