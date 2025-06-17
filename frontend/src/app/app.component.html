@@ -1,15 +1,481 @@
-<h1>Ambient Scribe</h1>
+<div class="app-container">
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar" [class.collapsed]="sidebarCollapsed">
+    <div class="sidebar-header">
+      <h2><i class="fas fa-cog"></i> Configuration</h2>
+    </div>
 
-<input type="file" (change)="onFileSelected($event)">
-<button (click)="upload()">Transcribe</button>
+    <!-- Azure Configuration -->
+    <div class="sidebar-section">
+      <h3>Azure Configuration</h3>
+      <div class="form-group">
+        <label class="form-label">Azure OpenAI API Key</label>
+        <input type="password" class="form-control" placeholder="Enter API key" [(ngModel)]="config.azureApiKey">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Azure OpenAI Endpoint</label>
+        <input type="text" class="form-control" placeholder="https://your-resource.openai.azure.com/" [(ngModel)]="config.azureEndpoint">
+      </div>
+    </div>
 
-<div *ngIf="transcript">
-  <h2>Transcript</h2>
-  <pre>{{transcript}}</pre>
-  <button (click)="generateNote()">Generate Note</button>
-</div>
+    <!-- Note Generation -->
+    <div class="sidebar-section">
+      <h3>Note Generation</h3>
+      <div class="form-group">
+        <label class="form-label">Note Template</label>
+        <select class="form-control" [(ngModel)]="config.selectedTemplate" (change)="saveConfiguration()">
+          <option *ngFor="let template of templateOptions" [value]="template.value" [title]="template.description">
+            {{template.label}}
+          </option>
+        </select>
+        <small class="form-text text-muted">{{getTemplateDescription()}}</small>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Note Model</label>
+        <select class="form-control" [(ngModel)]="config.noteModel" (change)="saveConfiguration()">
+          <option value="azure">Azure OpenAI (GPT-4)</option>
+          <option value="local">Local LLM Model</option>
+        </select>
+      </div>
+      <div class="form-group" *ngIf="config.noteModel === 'local'">
+        <label class="form-label">Local Model</label>
+        <select class="form-control" [(ngModel)]="config.localModel" (change)="saveConfiguration()">
+          <option *ngFor="let model of localModelOptions" [value]="model.value" [title]="model.description">
+            {{model.label}}
+          </option>
+        </select>
+        <small class="form-text text-muted">{{getLocalModelDescription()}}</small>
+      </div>
+    </div>
 
-<div *ngIf="note">
-  <h2>Generated Note</h2>
-  <pre>{{note}}</pre>
+    <!-- Speech Recognition -->
+    <div class="sidebar-section">
+      <h3>Speech Recognition</h3>
+      <div class="form-group">
+        <label class="form-label">ASR Engine</label>
+        <select class="form-control" [(ngModel)]="config.asrEngine" (change)="onAsrEngineChange()">
+          <option value="vosk">Vosk</option>
+          <option value="whisper">Whisper</option>
+          <option value="azure">Azure Speech</option>
+        </select>
+      </div>
+      <div class="form-group" *ngIf="config.asrEngine === 'vosk'">
+        <label class="form-label">Vosk Model</label>
+        <select class="form-control" [(ngModel)]="config.voskModel">
+          <option value="vosk-model-small-en-us-0.15">vosk-model-small-en-us-0.15</option>
+          <option value="vosk-model-en-us-0.22">vosk-model-en-us-0.22</option>
+        </select>
+      </div>
+      <div class="form-group" *ngIf="config.asrEngine === 'whisper'">
+        <label class="form-label">Whisper Size</label>
+        <select class="form-control" [(ngModel)]="config.whisperModel">
+          <option value="tiny">tiny</option>
+          <option value="base">base</option>
+          <option value="medium">medium</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Security Settings -->
+    <div class="sidebar-section">
+      <h3>Security</h3>
+      <div class="checkbox-group">
+        <input type="checkbox" id="encryption" [(ngModel)]="config.encryptRecordings">
+        <label for="encryption">Encrypt recordings on save</label>
+      </div>
+      <button class="btn btn-warning btn-sm" (click)="resetConfiguration()" style="margin-top: 10px;">
+        Reset Config
+      </button>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main-content">
+    <!-- Header -->
+    <div class="header">
+      <h1>
+        <i class="fas fa-stethoscope"></i>
+        Medical Transcription & Note Generation
+      </h1>
+      <div class="header-actions">
+        <button class="btn btn-secondary" (click)="toggleSidebar()">
+          <i class="fas fa-bars"></i>
+        </button>
+        <button class="btn btn-primary" (click)="exportResults()">
+          <i class="fas fa-download"></i>
+          Export
+        </button>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <div class="tab" [class.active]="activeTab === 'record'" (click)="switchTab('record')">
+        <i class="fas fa-microphone"></i> Record Audio
+      </div>
+      <div class="tab" [class.active]="activeTab === 'upload'" (click)="switchTab('upload')">
+        <i class="fas fa-upload"></i> Upload Audio
+      </div>
+      <div class="tab" [class.active]="activeTab === 'view'" (click)="switchTab('view')">
+        <i class="fas fa-file-alt"></i> View Transcription
+      </div>
+      <div class="tab" [class.active]="activeTab === 'compare'" (click)="switchTab('compare')">
+        <i class="fas fa-balance-scale"></i> Model Comparison
+      </div>
+    </div>
+
+    <!-- Tab Content -->
+    <div class="tab-content">
+      <!-- Record Tab -->
+      <div *ngIf="activeTab === 'record'" class="fade-in">
+        <!-- Consent Box -->
+        <div class="consent-box" [class.approved]="consentDocumented">
+          <div class="consent-header" *ngIf="!consentDocumented">
+            <i class="fas fa-clipboard-check"></i>
+            Patient Consent Documentation
+          </div>
+          <div class="consent-header" *ngIf="consentDocumented">
+            <i class="fas fa-check-circle"></i>
+            CONSENT RECORDED
+          </div>
+          <p *ngIf="!consentDocumented">The patient was informed of the presence of a listening and transcribing tool during the visit and given the option to opt out and agreed to proceed.</p>
+          <p *ngIf="consentDocumented">Patient has been informed and has agreed to proceed with recording and transcription.</p>
+          <div class="form-group" style="margin-top: 16px;" *ngIf="!consentDocumented">
+            <input type="text" class="form-control" placeholder="Patient Name" [(ngModel)]="patientName">
+          </div>
+          <div *ngIf="consentDocumented" style="margin-top: 16px;">
+            <strong>Patient:</strong> {{patientName}}<br>
+            <strong>Date:</strong> {{consentDate | date}}<br>
+            <strong>Time:</strong> {{consentDate | date:'shortTime'}}
+          </div>
+          <button class="btn btn-warning btn-lg btn-full" *ngIf="!consentDocumented" (click)="documentConsent()">
+            <i class="fas fa-check-circle"></i>
+            Document Patient Consent
+          </button>
+        </div>
+
+        <!-- Recording Mode Selection -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-cog"></i> Transcription Mode
+            </h3>
+          </div>
+          <div class="radio-group">
+            <label class="radio-option">
+              <input type="radio" name="mode" value="traditional" [(ngModel)]="recordingMode">
+              Traditional Recording
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="mode" value="realtime" [(ngModel)]="recordingMode">
+              Real-time ASR
+            </label>
+          </div>
+        </div>
+
+        <!-- Recording Controls -->
+        <div class="recording-controls">
+          <button class="btn btn-success btn-lg" [disabled]="isRecording" (click)="startRecording()">
+            <i class="fas fa-play"></i> Start Recording
+          </button>
+          <button class="btn btn-warning btn-lg" [disabled]="!isRecording" (click)="pauseRecording()">
+            <i class="fas fa-pause"></i> Pause
+          </button>
+          <button class="btn btn-danger btn-lg" [disabled]="!isRecording" (click)="stopRecording()">
+            <i class="fas fa-stop"></i> Stop
+          </button>
+        </div>
+
+        <!-- Real-time Transcription Display -->
+        <div class="transcription-display" [class.recording]="isRecording">
+          <div class="recording-indicator" *ngIf="isRecording">
+            <div class="recording-dot"></div>
+            RECORDING - <span>{{recordingTime}}</span>
+          </div>
+          <div class="transcription-text">
+            <span *ngIf="finalTranscriptionText || partialTranscriptionText; else placeholder">
+              {{finalTranscriptionText}}<span class="partial-text">{{partialTranscriptionText}}</span>
+            </span>
+            <ng-template #placeholder>
+              <span class="placeholder-text" *ngIf="isRecording && recordingMode === 'realtime'">
+                Listening for speech...
+              </span>
+              <span class="placeholder-text" *ngIf="!isRecording || recordingMode !== 'realtime'">
+                Real-time transcription will appear here when recording...
+              </span>
+            </ng-template>
+          </div>
+          <div class="confidence-low" *ngIf="lowConfidenceWords.length > 0">
+            Low confidence words: <span>{{lowConfidenceWords.join(', ')}}</span>
+          </div>
+        </div>
+
+        <!-- Progress Steps -->
+        <div class="progress-steps">
+          <div class="step" [class.active]="currentStep === 0" [class.completed]="currentStep > 0">
+            <div class="step-circle">1</div>
+            <div class="step-label">Record</div>
+          </div>
+          <div class="step" [class.active]="currentStep === 1" [class.completed]="currentStep > 1">
+            <div class="step-circle">2</div>
+            <div class="step-label">Transcribe</div>
+          </div>
+          <div class="step" [class.active]="currentStep === 2" [class.completed]="currentStep > 2">
+            <div class="step-circle">3</div>
+            <div class="step-label">Clean</div>
+          </div>
+          <div class="step" [class.active]="currentStep === 3" [class.completed]="currentStep > 3">
+            <div class="step-circle">4</div>
+            <div class="step-label">Generate Note</div>
+          </div>
+        </div>
+
+        <!-- Results Section -->
+        <div class="results-section" *ngIf="showResults">
+          <div class="result-box">
+            <div class="result-header">
+              <div class="result-title">
+                <i class="fas fa-file-alt"></i> Raw Transcription
+              </div>
+              <div class="result-actions">
+                <button class="btn btn-secondary btn-sm" (click)="copyToClipboard(rawTranscription)">
+                  <i class="fas fa-copy"></i>
+                </button>
+                <button class="btn btn-secondary btn-sm" (click)="downloadText(rawTranscription, 'raw-transcription.txt')">
+                  <i class="fas fa-download"></i>
+                </button>
+              </div>
+            </div>
+            <div class="result-content">
+              <p>{{rawTranscription || 'Transcription will appear here...'}}</p>
+            </div>
+          </div>
+
+          <div class="result-box">
+            <div class="result-header">
+              <div class="result-title">
+                <i class="fas fa-broom"></i> Cleaned Transcription
+              </div>
+              <div class="result-actions">
+                <button class="btn btn-secondary btn-sm" (click)="copyToClipboard(cleanedTranscription)">
+                  <i class="fas fa-copy"></i>
+                </button>
+              </div>
+            </div>
+            <div class="result-content">
+              <p>{{cleanedTranscription || 'Cleaned transcription with corrected medical terminology...'}}</p>
+            </div>
+          </div>
+
+          <div class="result-box">
+            <div class="result-header">
+              <div class="result-title">
+                <i class="fas fa-users"></i> Speaker Diarization
+              </div>
+              <div class="result-actions">
+                <button class="btn btn-secondary btn-sm" (click)="copyToClipboard(speakerDiarization)">
+                  <i class="fas fa-copy"></i>
+                </button>
+              </div>
+            </div>
+            <div class="result-content">
+              <div [innerHTML]="speakerDiarization || '<p><strong>Doctor:</strong> How are you feeling today?</p><p><strong>Patient:</strong> I\'ve been experiencing some discomfort...</p>'"></div>
+            </div>
+          </div>
+
+          <div class="result-box">
+            <div class="result-header">
+              <div class="result-title">
+                <i class="fas fa-notes-medical"></i> Generated Medical Note
+              </div>
+              <div class="result-actions">
+                <button class="btn btn-primary btn-sm" (click)="editNote()">
+                  <i class="fas fa-edit"></i>
+                </button>
+                <button class="btn btn-secondary btn-sm" (click)="copyToClipboard(generatedNote)">
+                  <i class="fas fa-copy"></i>
+                </button>
+                <button class="btn btn-secondary btn-sm" (click)="downloadText(generatedNote, 'medical-note.txt')">
+                  <i class="fas fa-download"></i>
+                </button>
+              </div>
+            </div>
+            <div class="result-content">
+              <div [innerHTML]="generatedNote || '<h4>SOAP Note</h4><p><strong>Subjective:</strong> Patient reports...</p><p><strong>Objective:</strong> Vital signs...</p><p><strong>Assessment:</strong> Clinical impression...</p><p><strong>Plan:</strong> Treatment recommendations...</p>'"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Upload Tab -->
+      <div *ngIf="activeTab === 'upload'">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-cloud-upload-alt"></i> Upload Audio File
+            </h3>
+          </div>
+          <div class="upload-area" 
+               (dragover)="onDragOver($event)" 
+               (dragleave)="onDragLeave($event)" 
+               (drop)="onDrop($event)"
+               (click)="fileInput.click()">
+            <i class="fas fa-cloud-upload-alt" style="font-size: 48px; color: var(--text-secondary); margin-bottom: 16px;"></i>
+            <p style="color: var(--text-secondary); margin-bottom: 16px;">Drag and drop your audio file here, or click to browse</p>
+            <button class="btn btn-primary">Choose File</button>
+            <p style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">Supported formats: WAV, MP3, M4A</p>
+            <input #fileInput type="file" accept="audio/*" style="display: none;" (change)="onFileSelected($event)">
+          </div>
+          <div *ngIf="selectedFile" class="alert alert-info" style="margin-top: 16px;">
+            <i class="fas fa-file-audio"></i>
+            Selected file: {{selectedFile.name}} ({{(selectedFile.size / 1024 / 1024).toFixed(2)}} MB)
+            <button class="btn btn-primary" style="margin-left: 16px;" (click)="uploadAndTranscribe()">
+              <i class="fas fa-upload"></i> Upload & Transcribe
+            </button>
+          </div>
+
+          <!-- Audio Preview -->
+          <div *ngIf="selectedFileUrl" style="margin-top: 16px; text-align: center;">
+            <audio [src]="selectedFileUrl" controls style="width: 100%; max-width: 600px;"></audio>
+          </div>
+
+          <!-- Results Section (mirrors Record tab) -->
+          <div class="results-section" *ngIf="showResults" style="margin-top: 32px;">
+            <div class="result-box">
+              <div class="result-header">
+                <div class="result-title">
+                  <i class="fas fa-file-alt"></i> Raw Transcription
+                </div>
+                <div class="result-actions">
+                  <button class="btn btn-secondary btn-sm" (click)="copyToClipboard(rawTranscription)">
+                    <i class="fas fa-copy"></i>
+                  </button>
+                  <button class="btn btn-secondary btn-sm" (click)="downloadText(rawTranscription, 'raw-transcription.txt')">
+                    <i class="fas fa-download"></i>
+                  </button>
+                </div>
+              </div>
+              <div class="result-content">
+                <p>{{rawTranscription || 'Transcription will appear here...'}}</p>
+              </div>
+            </div>
+
+            <div class="result-box">
+              <div class="result-header">
+                <div class="result-title">
+                  <i class="fas fa-broom"></i> Cleaned Transcription
+                </div>
+                <div class="result-actions">
+                  <button class="btn btn-secondary btn-sm" (click)="copyToClipboard(cleanedTranscription)">
+                    <i class="fas fa-copy"></i>
+                  </button>
+                </div>
+              </div>
+              <div class="result-content">
+                <p>{{cleanedTranscription || 'Cleaned transcription with corrected medical terminology...'}}</p>
+              </div>
+            </div>
+
+            <div class="result-box">
+              <div class="result-header">
+                <div class="result-title">
+                  <i class="fas fa-users"></i> Speaker Diarization
+                </div>
+                <div class="result-actions">
+                  <button class="btn btn-secondary btn-sm" (click)="copyToClipboard(speakerDiarization)">
+                    <i class="fas fa-copy"></i>
+                  </button>
+                </div>
+              </div>
+              <div class="result-content">
+                <div [innerHTML]="speakerDiarization || '<p><strong>Doctor:</strong> How are you feeling today?</p><p><strong>Patient:</strong> I\'ve been experiencing some discomfort...</p>'"></div>
+              </div>
+            </div>
+
+            <div class="result-box">
+              <div class="result-header">
+                <div class="result-title">
+                  <i class="fas fa-notes-medical"></i> Generated Medical Note
+                </div>
+                <div class="result-actions">
+                  <button class="btn btn-primary btn-sm" (click)="editNote()">
+                    <i class="fas fa-edit"></i>
+                  </button>
+                  <button class="btn btn-secondary btn-sm" (click)="copyToClipboard(generatedNote)">
+                    <i class="fas fa-copy"></i>
+                  </button>
+                  <button class="btn btn-secondary btn-sm" (click)="downloadText(generatedNote, 'medical-note.txt')">
+                    <i class="fas fa-download"></i>
+                  </button>
+                </div>
+              </div>
+              <div class="result-content">
+                <div [innerHTML]="generatedNote || '<h4>SOAP Note</h4><p><strong>Subjective:</strong> Patient reports...</p><p><strong>Objective:</strong> Vital signs...</p><p><strong>Assessment:</strong> Clinical impression...</p><p><strong>Plan:</strong> Treatment recommendations...</p>'"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- View Tab -->
+      <div *ngIf="activeTab === 'view'">
+        <div class="alert alert-info">
+          <i class="fas fa-info-circle"></i>
+          Select a WAV file to view its transcription
+        </div>
+      </div>
+
+      <!-- Compare Tab -->
+      <div *ngIf="activeTab === 'compare'">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-balance-scale"></i> Select Models to Compare
+            </h3>
+          </div>
+          <div class="comparison-container">
+            <div class="comparison-box">
+              <div class="comparison-header">Model 1</div>
+              <div class="form-group">
+                <label class="form-label">Model Type</label>
+                <select class="form-control" [(ngModel)]="comparison.model1.type">
+                  <option value="vosk">Vosk</option>
+                  <option value="whisper">Whisper</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Model Size</label>
+                <select class="form-control" [(ngModel)]="comparison.model1.size">
+                  <option value="small">Small</option>
+                  <option value="base">Base</option>
+                  <option value="medium">Medium</option>
+                </select>
+              </div>
+            </div>
+            <div class="comparison-box">
+              <div class="comparison-header">Model 2</div>
+              <div class="form-group">
+                <label class="form-label">Model Type</label>
+                <select class="form-control" [(ngModel)]="comparison.model2.type">
+                  <option value="whisper">Whisper</option>
+                  <option value="vosk">Vosk</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Model Size</label>
+                <select class="form-control" [(ngModel)]="comparison.model2.size">
+                  <option value="tiny">Tiny</option>
+                  <option value="base">Base</option>
+                  <option value="medium">Medium</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-lg" style="margin-top: 24px;" (click)="runComparison()">
+            <i class="fas fa-play"></i> Run Comparison
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
