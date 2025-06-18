@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import zipfile
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -11,7 +12,11 @@ import requests
 from dataclasses import dataclass
 
 from .base import Transcriber
-from ..config import config, logger
+from ..core.container import global_container
+from ..core.interfaces.config_service import IConfigurationService
+
+# Setup logging using the standard Python logging module
+logger = logging.getLogger("ambient_scribe")
 
 
 @dataclass
@@ -23,7 +28,17 @@ class VoskTranscriber(Transcriber):
     def __post_init__(self) -> None:
         if isinstance(self.model_path, str):
             self.model_path = Path(self.model_path)
-        self.model_path = self.model_path or config["MODEL_DIR"] / "vosk-model-small-en-us-0.15"
+        
+        # Get configuration from DI container
+        try:
+            config_service = global_container.resolve(IConfigurationService)
+            base_dir = config_service.get("base_dir", Path("./app_data"))
+        except Exception:
+            # Fallback if DI not fully initialized
+            base_dir = Path("./app_data")
+        
+        model_dir = base_dir / "models"
+        self.model_path = self.model_path or model_dir / "vosk-model-small-en-us-0.15"
 
     # ------------------------------------------------------------------
     def _download_small_model(self, target_dir: Path) -> None:
@@ -51,10 +66,20 @@ class VoskTranscriber(Transcriber):
     def _ensure_model(self) -> Optional[str]:
         if not self.model_path.exists() or not any(self.model_path.iterdir()):
             logger.warning(f"Vosk model directory not found or empty: {self.model_path}")
-            default_path = config["MODEL_DIR"] / "vosk-model-small-en-us-0.15"
+            
+            # Get model directory from configuration
+            try:
+                config_service = global_container.resolve(IConfigurationService)
+                base_dir = config_service.get("base_dir", Path("./app_data"))
+            except Exception:
+                base_dir = Path("./app_data")
+            
+            model_dir = base_dir / "models"
+            default_path = model_dir / "vosk-model-small-en-us-0.15"
+            
             if self.model_path == default_path:
                 try:
-                    self._download_small_model(config["MODEL_DIR"])
+                    self._download_small_model(model_dir)
                 except Exception as e:  # pragma: no cover - network failure
                     logger.error(f"Failed to download default Vosk model: {e}")
                     return f"ERROR: Failed to download default Vosk model: {e}"
@@ -71,24 +96,76 @@ class VoskTranscriber(Transcriber):
         except ImportError:
             return "ERROR: 'vosk' library not installed. Please install it (e.g., pip install vosk)."
 
+        # Ensure audio is in correct format for Vosk (16kHz mono WAV)
+        try:
+            from ..audio.audio_processing import convert_to_wav
+            logger.info(f"Converting audio file: {audio_path}")
+            converted_path = convert_to_wav(audio_path)
+            audio_path = Path(converted_path)
+            logger.info(f"Audio converted to: {audio_path}")
+        except Exception as e:
+            logger.error(f"Audio conversion failed, trying original file: {e}")
+
         err = self._ensure_model()
         if err:
+            logger.error(f"Model validation failed: {err}")
             return err
 
         try:
             logger.info(f"Loading Vosk model from: {self.model_path}")
             model = Model(str(self.model_path))
-            sample_rate = int(config.get("RATE", 16000))
+            
+            # Get sample rate from configuration with fallback
+            sample_rate = 16000  # Default sample rate for Vosk
+            try:
+                config_service = global_container.resolve(IConfigurationService)
+                sample_rate = config_service.get("rate", 16000)
+            except Exception:
+                pass
+            
+            logger.info(f"Using sample rate: {sample_rate}")
             rec = KaldiRecognizer(model, sample_rate)
             rec.SetWords(True)
-            with open(audio_path, "rb") as wf:
-                while True:
-                    data = wf.read(4000 * 2)
-                    if not data:
-                        break
-                    rec.AcceptWaveform(data)
-            final_result = json.loads(rec.FinalResult())
-            return final_result.get("text", "").strip()
+            
+            try:
+                # Use wave module to properly read WAV file
+                import wave
+                logger.info(f"Opening WAV file: {audio_path}")
+                
+                with wave.open(str(audio_path), 'rb') as wf:
+                    # Verify format
+                    channels = wf.getnchannels()
+                    rate = wf.getframerate()
+                    frames = wf.getnframes()
+                    logger.info(f"WAV format: {channels} channels, {rate}Hz, {frames} frames")
+                    
+                    if channels != 1:
+                        logger.warning(f"Audio has {channels} channels, expected 1 (mono)")
+                    if rate != sample_rate:
+                        logger.warning(f"Audio sample rate is {rate}, expected {sample_rate}")
+                    
+                    # Read and process audio frames
+                    total_frames_processed = 0
+                    while True:
+                        audio_frames = wf.readframes(4000)
+                        if not audio_frames:
+                            break
+                        rec.AcceptWaveform(audio_frames)
+                        total_frames_processed += len(audio_frames)
+                    
+                    logger.info(f"Processed {total_frames_processed} audio bytes")
+                
+                logger.info("Getting final result from Vosk...")
+                final_result = json.loads(rec.FinalResult())
+                logger.info(f"Raw Vosk result: {final_result}")
+                transcript = final_result.get("text", "").strip()
+                logger.info(f"Vosk transcription result: '{transcript}' (length: {len(transcript)})")
+                return transcript
+                
+            except Exception as wave_error:
+                logger.error(f"WAV file processing error: {wave_error}")
+                return f"ERROR: WAV file processing failed: {wave_error}"
+                
         except Exception as e:  # pragma: no cover - runtime failure
             logger.error(f"Vosk recognition failed (model: {self.model_path}): {e}")
             return f"ERROR: Vosk transcription failed: {e}"

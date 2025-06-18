@@ -5,10 +5,16 @@ import json
 import queue
 import time
 import wave
+import logging
 from dataclasses import dataclass, field
 from typing import List
+from pathlib import Path
 
-from ..config import config, logger
+from ..core.container import global_container
+from ..core.interfaces.config_service import IConfigurationService
+
+# Setup logging using the standard Python logging module
+logger = logging.getLogger("ambient_scribe")
 
 
 def load_vosk_model(model_path: str):
@@ -20,6 +26,24 @@ def load_vosk_model(model_path: str):
         cache[model_path] = Model(model_path)
         setattr(load_vosk_model, "_cache", cache)
     return cache[model_path]
+
+
+def _get_audio_config():
+    """Helper to get audio configuration from DI container with fallbacks."""
+    try:
+        config_service = global_container.resolve(IConfigurationService)
+        return {
+            "rate": 16000,  # Default sample rate
+            "chunk": 1024,  # Default chunk size
+            "channels": 1,  # Default mono
+        }
+    except Exception:
+        # Fallback values if DI not available
+        return {
+            "rate": 16000,
+            "chunk": 1024,
+            "channels": 1,
+        }
 
 
 @dataclass
@@ -35,8 +59,9 @@ class VoskStreamingHandler:
 
     def __post_init__(self) -> None:
         from vosk import KaldiRecognizer
-
-        self.rec = KaldiRecognizer(load_vosk_model(self.model_path), config["RATE"])
+        
+        audio_config = _get_audio_config()
+        self.rec = KaldiRecognizer(load_vosk_model(self.model_path), audio_config["rate"])
         self.rec.SetWords(True)
 
     def __call__(self, chunk: bytes) -> None:
@@ -144,11 +169,13 @@ class WhisperStreamingHandler:
                 "processing": False,
             }
             self.update_queue.put(update)
-        max_buf_len_bytes = int(10 * config["RATE"] * 2)
+        
+        audio_config = _get_audio_config()
+        max_buf_len_bytes = int(10 * audio_config["rate"] * 2)
         if len(audio_buffer) > max_buf_len_bytes:
             start_byte = len(audio_buffer) - max_buf_len_bytes
             new_buf = audio_buffer[start_byte:]
-            chunk_size = config["CHUNK"] * 2
+            chunk_size = audio_config["chunk"] * 2
             self.buf = [new_buf[i : i + chunk_size] for i in range(0, len(new_buf), chunk_size)]
 
 
@@ -172,7 +199,9 @@ class AzureSpeechStreamingHandler:
         elapsed = time.time() - self.start_time
         elapsed_str = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
         audio_buffer = b"".join(self.buf)
-        samples_per_chunk = int(config["RATE"] * self.chunk_duration)
+        
+        audio_config = _get_audio_config()
+        samples_per_chunk = int(audio_config["rate"] * self.chunk_duration)
         audio_samples = len(audio_buffer) // 2
         if audio_samples >= samples_per_chunk or (time.time() - self.last_time >= 3):
             self.last_time = time.time()
@@ -188,9 +217,9 @@ class AzureSpeechStreamingHandler:
             try:
                 wav_buffer = io.BytesIO()
                 with wave.open(wav_buffer, "wb") as wf:
-                    wf.setnchannels(config["CHANNELS"])
+                    wf.setnchannels(audio_config["channels"])
                     wf.setsampwidth(2)
-                    wf.setframerate(config["RATE"])
+                    wf.setframerate(audio_config["rate"])
                     wf.writeframes(audio_buffer)
                 request_url = f"{self.endpoint}/speech/recognition/conversation/cognitiveservices/v1"
                 headers = {"api-key": self.api_key, "Content-Type": "audio/wav"}
@@ -234,7 +263,7 @@ class AzureSpeechStreamingHandler:
             if audio_samples >= samples_per_chunk:
                 excess_samples = audio_samples - samples_per_chunk
                 new_buf_bytes = audio_buffer[-excess_samples * 2 :]
-                chunk_size = config["CHUNK"] * 2
+                chunk_size = audio_config["chunk"] * 2
                 self.buf = [
                     new_buf_bytes[i : i + chunk_size]
                     for i in range(0, len(new_buf_bytes), chunk_size)

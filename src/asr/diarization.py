@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import re
+import logging
 from typing import Optional
 
-from ..config import config, logger
+from ..core.container import global_container
+from ..core.interfaces.config_service import IConfigurationService
 from ..utils import sanitize_input
 from core.bootstrap import container
 from core.factories.llm_factory import LLMProviderFactory
 from core.exceptions import ConfigurationError
+
+# Setup logging using the standard Python logging module
+logger = logging.getLogger("ambient_scribe")
 
 
 class Diarizer:
@@ -51,14 +56,27 @@ class Diarizer:
         if not sanitized:
             logger.warning("Transcript became empty after sanitization.")
             return ""
+        
+        # Get configuration from DI container
+        try:
+            config_service = global_container.resolve(IConfigurationService)
+            default_endpoint = config_service.get("azure.endpoint")
+            default_model = config_service.get("azure.model_name", "gpt-4o")
+            default_api_version = config_service.get("azure.api_version", "2024-02-15-preview")
+        except Exception:
+            # Fallback defaults if DI not available
+            default_endpoint = None
+            default_model = "gpt-4o"
+            default_api_version = "2024-02-15-preview"
+        
         try:
             llm_factory = container.resolve(LLMProviderFactory)
             provider = llm_factory.create(
                 "azure_openai",
                 api_key=api_key,
-                endpoint=endpoint or config["AZURE_ENDPOINT"],
-                model_name=model_name or config["MODEL_NAME"],
-                api_version=api_ver or config["API_VERSION"],
+                endpoint=endpoint or default_endpoint,
+                model_name=model_name or default_model,
+                api_version=api_ver or default_api_version,
             )
             prompt = (
                 "System: You are an expert medical transcript editor. Your task is to accurately assign speaker roles (User or Patient) "
