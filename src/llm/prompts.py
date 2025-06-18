@@ -1,10 +1,27 @@
 import json
 import os
+import logging
 from typing import Dict
 from functools import lru_cache
+from pathlib import Path
 
-# Import the full config object rather than just the logger
-from ..config import config, logger
+from ..core.container import global_container
+from ..core.interfaces.config_service import IConfigurationService
+
+# Setup logging using the standard Python logging module
+logger = logging.getLogger("ambient_scribe")
+
+
+def _get_prompt_store_path():
+    """Helper to get prompt store path from DI container with fallback."""
+    try:
+        config_service = global_container.resolve(IConfigurationService)
+        base_dir = config_service.get("base_dir", Path("./app_data"))
+        return base_dir / "prompt_templates.json"
+    except Exception:
+        # Fallback if DI not available
+        return Path("./app_data/prompt_templates.json")
+
 
 # --- Prompt Template Management ---
 
@@ -99,7 +116,11 @@ TEMPLATE_SUGGESTIONS = {
 @lru_cache(maxsize=None)
 def load_prompt_templates() -> Dict[str, str]:
     """Load prompt templates from JSON file, falling back to defaults."""
-    prompt_file = config["PROMPT_STORE"]
+    prompt_file = _get_prompt_store_path()
+    
+    # Ensure the parent directory exists
+    prompt_file.parent.mkdir(parents=True, exist_ok=True)
+    
     if not prompt_file.exists():
         logger.info(f"Prompt template file not found at {prompt_file}. Creating with defaults.")
         try:
@@ -132,7 +153,7 @@ def save_custom_template(name: str, template: str) -> bool:
         logger.warning("Attempted to save template with empty name or content.")
         return False
 
-    prompt_file = config["PROMPT_STORE"]
+    prompt_file = _get_prompt_store_path()
     success = False
     try:
         # Load existing templates (use load function to handle file creation/errors)

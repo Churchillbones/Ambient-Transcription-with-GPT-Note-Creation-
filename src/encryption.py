@@ -1,18 +1,46 @@
 import json
 import wave
 import tempfile
+import logging
 from pathlib import Path
 from typing import Tuple
 from contextlib import contextmanager
 from functools import lru_cache
 from cryptography.fernet import Fernet
-from .config import config, logger # Import config and logger
+
+from .core.container import global_container
+from .core.interfaces.config_service import IConfigurationService
+
+# Setup logging using the standard Python logging module
+logger = logging.getLogger("ambient_scribe")
+
+
+def _get_encryption_config():
+    """Helper to get encryption configuration from DI container with fallbacks."""
+    try:
+        config_service = global_container.resolve(IConfigurationService)
+        base_dir = config_service.get("base_dir", Path("./app_data"))
+        return {
+            "key_dir": base_dir / "keys",
+            "cache_dir": base_dir / "cache",
+        }
+    except Exception:
+        # Fallback values if DI not available
+        return {
+            "key_dir": Path("./app_data/keys"),
+            "cache_dir": Path("./app_data/cache"),
+        }
+
 
 # --- Encryption Functions ---
 @lru_cache(maxsize=None)
 def get_encryption_key() -> bytes:
     """Get or generate an encryption key."""
-    key_file = config["KEY_DIR"] / "encryption_key.bin"
+    enc_config = _get_encryption_config()
+    # Ensure the key directory exists
+    enc_config["key_dir"].mkdir(parents=True, exist_ok=True)
+    
+    key_file = enc_config["key_dir"] / "encryption_key.bin"
     if not key_file.exists():
         key = Fernet.generate_key()
         try:
@@ -140,7 +168,11 @@ def decrypt_to_wav(enc_path: str, key: bytes) -> Tuple[str, bool]:
         frames = decrypt_data(encrypted_frames, key) # Handles its own exceptions
 
         # Create a temporary WAV file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav', dir=config["CACHE_DIR"]) as tmp:
+        enc_config = _get_encryption_config()
+        # Ensure cache directory exists
+        enc_config["cache_dir"].mkdir(parents=True, exist_ok=True)
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav', dir=enc_config["cache_dir"]) as tmp:
             temp_path = tmp.name
 
         # Write a proper WAV file with the decrypted frames

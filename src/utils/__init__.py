@@ -11,7 +11,33 @@ try:
     import numpy as np
 except ImportError:
     np = None
-from ..config import config, logger # Import config and logger from the same package
+
+from ..core.container import global_container
+from ..core.interfaces.config_service import IConfigurationService
+
+# Setup logging using the standard Python logging module
+logger = logging.getLogger("ambient_scribe")
+
+
+def _get_audio_config():
+    """Helper to get audio configuration from DI container with fallbacks."""
+    try:
+        config_service = global_container.resolve(IConfigurationService)
+        return {
+            "format_str": "paInt16",  # 16-bit PCM
+            "channels": 1,            # Mono
+            "rate": 16000,           # 16 kHz
+            "chunk": 1024,           # Default chunk size
+        }
+    except Exception:
+        # Fallback values if DI not available
+        return {
+            "format_str": "paInt16",
+            "channels": 1,
+            "rate": 16000,
+            "chunk": 1024,
+        }
+
 
 # --- Utility Functions ---
 def sanitize_input(user_input: str) -> str:
@@ -39,12 +65,15 @@ def audio_stream(p=None, close_pyaudio=True):
     audio_interface = None
     stream = None
     try:
+        # Get audio configuration
+        audio_config = _get_audio_config()
+        
         # Resolve PyAudio format constant
         try:
-            audio_format = getattr(pyaudio, config["FORMAT_STR"])
+            audio_format = getattr(pyaudio, audio_config["format_str"])
         except AttributeError:
-            logger.error(f"Invalid PyAudio format string in config: {config['FORMAT_STR']}")
-            raise ValueError(f"Invalid PyAudio format: {config['FORMAT_STR']}")
+            logger.error(f"Invalid PyAudio format string in config: {audio_config['format_str']}")
+            raise ValueError(f"Invalid PyAudio format: {audio_config['format_str']}")
 
         if p is None:
             audio_interface = pyaudio.PyAudio()
@@ -53,10 +82,10 @@ def audio_stream(p=None, close_pyaudio=True):
 
         stream = audio_interface.open(
             format=audio_format,
-            channels=config["CHANNELS"],
-            rate=config["RATE"],
+            channels=audio_config["channels"],
+            rate=audio_config["rate"],
             input=True,
-            frames_per_buffer=config["CHUNK"]
+            frames_per_buffer=audio_config["chunk"]
         )
         logger.debug("Audio stream opened successfully.")
         yield stream, audio_interface # Yield both stream and interface
@@ -174,8 +203,12 @@ def get_embedding_service(api_key: str = None, endpoint: str = None, api_version
         return None
         
     if not api_key:
-        # Try to get from config
-        api_key = config.get("OPENAI_API_KEY", "")
+        # Try to get from DI configuration service
+        try:
+            config_service = global_container.resolve(IConfigurationService)
+            api_key = config_service.get("azure.api_key", "")
+        except Exception:
+            api_key = ""
     
     if not endpoint:
         # Use default VA endpoint
@@ -239,35 +272,25 @@ def find_similar_chunks(chunks: List[str], embedding_service,
 
 def cluster_by_topic(chunks: List[str], embedding_service, 
                      num_clusters: int = 5) -> Dict[int, List[int]]:
-    """Cluster chunks by topic similarity"""
-    if not embedding_service:
-        logger.warning("Embedding service not available, cannot cluster by topic")
-        return {0: list(range(len(chunks)))}
+    """Cluster chunks by topic using embeddings"""
+    if not embedding_service or not np:
+        logger.warning("Embedding service or numpy not available, cannot cluster chunks")
+        return {}
         
-    # This requires scikit-learn
-    try:
-        from sklearn.cluster import KMeans
-        
-        # Get embeddings
-        embeddings = embedding_service.get_batch_embeddings(chunks)
-        
-        # Convert to numpy array
-        embeddings_array = np.array(embeddings)
-        
-        # Perform K-means clustering
-        kmeans = KMeans(n_clusters=min(num_clusters, len(chunks)), random_state=42)
-        clusters = kmeans.fit_predict(embeddings_array)
-        
-        # Group chunk indices by cluster
-        cluster_map = {}
-        for i, cluster_id in enumerate(clusters):
-            if cluster_id not in cluster_map:
-                cluster_map[cluster_id] = []
-            cluster_map[cluster_id].append(i)
-        
-        return cluster_map
-        
-    except ImportError:
-        logger.warning("scikit-learn not available for clustering")
-        # Fallback to simple chunking
-        return {0: list(range(len(chunks)))}
+    # Get embeddings for all chunks
+    embeddings = embedding_service.get_batch_embeddings(chunks)
+    
+    # Use KMeans clustering
+    from sklearn.cluster import KMeans
+    
+    kmeans = KMeans(n_clusters=min(num_clusters, len(chunks)), random_state=42)
+    cluster_labels = kmeans.fit_predict(embeddings)
+    
+    # Group chunk indices by cluster
+    clusters = {}
+    for i, label in enumerate(cluster_labels):
+        if label not in clusters:
+            clusters[label] = []
+        clusters[label].append(i)
+    
+    return clusters

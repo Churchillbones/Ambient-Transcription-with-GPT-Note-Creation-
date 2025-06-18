@@ -1,9 +1,14 @@
 import asyncio
 import requests
+import logging
 from typing import Optional, Dict, Tuple, List, Any
 
-from ..config import config, logger
+from ..core.container import global_container
+from ..core.interfaces.config_service import IConfigurationService
 from ..utils import sanitize_input
+
+# Setup logging using the standard Python logging module
+logger = logging.getLogger("ambient_scribe")
 from .token_management import (
     count_tokens,
     generate_note_from_chunked_transcript,
@@ -16,6 +21,43 @@ from core.bootstrap import container  # late import
 from core.factories.llm_factory import LLMProviderFactory
 from core.exceptions import ConfigurationError
 
+# ------------------------------------------------------------------
+# Built-in prompt templates keyed by simple names sent from frontend
+TEMPLATE_LIBRARY: dict[str, str] = {
+    "SOAP": (
+        "You are a clinical documentation assistant. Using the provided encounter transcription, "
+        "generate a SOAP note in HTML with <h4> section headings for Subjective, Objective, Assessment, and Plan.\n\n"
+        "TRANSCRIPTION:\n{transcription}"
+    ),
+    "PrimaryCare": (
+        "Create a comprehensive primary-care visit note (CC, HPI, ROS, PE, Assessment, Plan) in HTML using the encounter transcription below.\n\n"
+        "{transcription}"
+    ),
+    "Psychiatric Assessment": (
+        "Generate a psychiatric assessment (Chief Complaint, History of Present Illness, Mental Status Exam, Risk, Plan) from the transcription.\n\n{transcription}"
+    ),
+    "Discharge Summary": (
+        "Draft a hospital discharge summary (Admission Dx, Hospital Course, Discharge Medications, Follow-up) using the encounter transcription.\n\n{transcription}"
+    ),
+    "Operative Note": (
+        "Produce an operative note (Indication, Procedure Details, Findings, Complications, Disposition) from the following transcription.\n\n{transcription}"
+    ),
+    "Biopsychosocial": (
+        "Create a biopsychosocial assessment note based on the transcription.\n\n{transcription}"
+    ),
+    "Consultation Note": (
+        "Write a specialist consultation note (Reason, Findings, Impression, Recommendations) from the transcription.\n\n{transcription}"
+    ),
+    "Well-Child Visit": (
+        "Generate a well-child visit note (Growth, Development, Exam, Anticipatory Guidance, Plan) using the transcription.\n\n{transcription}"
+    ),
+    "Emergency Department": (
+        "Create an emergency department note (HPI, ROS, PE, ED Course, MDM, Disposition) from this transcription.\n\n{transcription}"
+    ),
+    "Progress Note": (
+        "Craft a follow-up progress note (Interval History, Exam, Assessment, Plan) from the transcription.\n\n{transcription}"
+    ),
+}
 
 async def generate_note_router(
     transcript: str,
@@ -202,7 +244,14 @@ async def clean_transcription(
     try:
         if use_local:
             # --- Use local LLM model API ---
-            if not config["LOCAL_MODEL_API_URL"]:
+            # Get configuration from DI container
+            try:
+                config_service = global_container.resolve(IConfigurationService)
+                local_model_api_url = config_service.get("local_model_api_url", "http://localhost:8001/generate_note")
+            except Exception:
+                local_model_api_url = "http://localhost:8001/generate_note"
+            
+            if not local_model_api_url:
                  logger.error("Local LLM API URL is not configured.")
                  return sanitized_transcript  # Fall back to original
 
@@ -218,7 +267,7 @@ async def clean_transcription(
                 # Use asyncio.to_thread for the blocking requests call
                 response = await asyncio.to_thread(
                     lambda: requests.post(
-                        config["LOCAL_MODEL_API_URL"],
+                        local_model_api_url,
                         json=request_payload,
                         timeout=30  # Shorter timeout for cleanup vs full note generation
                     )
@@ -320,167 +369,183 @@ async def generate_note(
 
         provider = llm_factory.create(provider_type, **provider_kwargs)  # type: ignore[arg-type]
 
-        # Build prompt below then call provider.generate_note()
-    except Exception:
-        provider = None  # Fallback to legacy logic
-
-    # Determine the final prompt, incorporating patient data if available
-    final_prompt_template = prompt_template or "Create a clinical note from the following transcription."
-
-    # Construct patient info string safely
-    patient_info_lines = []
-    if patient_data:
-        if patient_data.get("name"):
-            patient_info_lines.append(f"Name: {sanitize_input(patient_data['name'])}") # Sanitize patient name
-        if patient_data.get("ehr_data"):
-            # Sanitize EHR data more carefully if needed, depending on expected content
-            patient_info_lines.append(f"\nEHR DATA:\n{sanitize_input(patient_data['ehr_data'])}") # Basic sanitize
-
-    if patient_info_lines:
-        patient_info_str = "\n".join(patient_info_lines)
-        # Check if the template already has a placeholder for transcription
-        if "{transcription}" in final_prompt_template:
-             # Inject patient info before the transcription placeholder or at a suitable point
-             # This might need refinement based on typical template structures
-             parts = final_prompt_template.split("{transcription}", 1)
-             prompt = f"{parts[0]}\n\nPATIENT INFORMATION:\n{patient_info_str}\n\nENCOUNTER TRANSCRIPTION:\n{{transcription}}{parts[1]}"
-             prompt = prompt.format(transcription=sanitized_transcript)
+        # Map simple template keys from UI to full prompt templates
+        if prompt_template in TEMPLATE_LIBRARY:
+            final_prompt_template = TEMPLATE_LIBRARY[prompt_template]
         else:
-             # Append patient info and transcription if no placeholder exists
-             prompt = f"{final_prompt_template}\n\nPATIENT INFORMATION:\n{patient_info_str}\n\nENCOUNTER TRANSCRIPTION:\n{sanitized_transcript}"
-    else:
-        # Use standard prompt formatting if no patient data
-        if "{transcription}" in final_prompt_template:
-             prompt = final_prompt_template.format(transcription=sanitized_transcript)
-        else:
-             prompt = f"{final_prompt_template}\n\n{sanitized_transcript}"
+            # Fallback to provided template string or a basic default
+            final_prompt_template = prompt_template or "Create a clinical note from the following transcription."
 
-    logger.debug(f"Final prompt for note generation (first 100 chars): {prompt[:100]}...")
+        # Construct patient info string safely
+        patient_info_lines = []
+        if patient_data:
+            if patient_data.get("name"):
+                patient_info_lines.append(f"Name: {sanitize_input(patient_data['name'])}") # Sanitize patient name
+            if patient_data.get("ehr_data"):
+                # Sanitize EHR data more carefully if needed, depending on expected content
+                patient_info_lines.append(f"\nEHR DATA:\n{sanitize_input(patient_data['ehr_data'])}") # Basic sanitize
 
-    # If provider resolved, delegate directly and return
-    if provider is not None:
-        try:
-            return await provider.generate_note(transcript=sanitized_transcript, template=final_prompt_template)
-        except Exception as e:
-            logger.error(f"LLMProviderFactory path failed, falling back to legacy: {e}")
-
-    try:
-        if use_local:
-            # --- Use local LLM model API ---
-            if not config["LOCAL_MODEL_API_URL"]:
-                 logger.error("Local LLM API URL is not configured.")
-                 return "Error: Local LLM endpoint not configured."
-
-            request_payload = {"prompt": prompt}
-            if local_model:
-                request_payload["model"] = local_model
-                logger.info(f"Sending request to local LLM: {local_model} at {config['LOCAL_MODEL_API_URL']}")
+        if patient_info_lines:
+            patient_info_str = "\n".join(patient_info_lines)
+            # Check if the template already has a placeholder for transcription
+            if "{transcription}" in final_prompt_template:
+                 # Inject patient info before the transcription placeholder or at a suitable point
+                 # This might need refinement based on typical template structures
+                 parts = final_prompt_template.split("{transcription}", 1)
+                 prompt = f"{parts[0]}\n\nPATIENT INFORMATION:\n{patient_info_str}\n\nENCOUNTER TRANSCRIPTION:\n{{transcription}}{parts[1]}"
+                 prompt = prompt.format(transcription=sanitized_transcript)
             else:
-                 logger.info(f"Sending request to local LLM at {config['LOCAL_MODEL_API_URL']} (default model)")
-
-
-            try:
-                # Use asyncio.to_thread for the blocking requests call
-                response = await asyncio.to_thread(
-                    lambda: requests.post(
-                        config["LOCAL_MODEL_API_URL"],
-                        json=request_payload,
-                        timeout=60 # Increased timeout for potentially slower local models
-                    )
-                )
-                response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-
-                response_data = response.json()
-                note = response_data.get("note", "")
-                if not note:
-                     logger.warning("Local model returned an empty note.")
-                     return "Note generation result was empty."
-                logger.info("Successfully received note from local LLM.")
-                return note
-
-            except requests.exceptions.Timeout:
-                logger.error("Request to local LLM timed out.")
-                return "Error: Request to local model timed out."
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Local LLM request failed: {e}")
-                error_detail = str(e)
-                try:
-                    # Try to get more detail from response if available
-                    error_detail = response.text
-                except NameError: # response might not be defined if connection failed early
-                    pass
-                return f"Error communicating with local model: {error_detail[:200]}" # Limit error length
-
+                 # Append patient info and transcription if no placeholder exists
+                 prompt = f"{final_prompt_template}\n\nPATIENT INFORMATION:\n{patient_info_str}\n\nENCOUNTER TRANSCRIPTION:\n{sanitized_transcript}"
         else:
-            # --- Use Azure OpenAI ---
-            if not api_key:
-                logger.error("Azure API key is required but not provided for note generation.")
-                return "Error: API key is required for Azure OpenAI."
-            # Check other required params passed down
-            if not azure_endpoint or not azure_api_version or not azure_model_name:
-                 logger.error("Azure endpoint, version, or model name missing for note generation.")
-                 return "Error: Azure configuration incomplete."
-                 
-            # Get token count for transcript to determine approach
-            transcript_tokens = count_tokens(sanitized_transcript, "gpt-4o")
-            logger.info(f"Transcript token count: {transcript_tokens}")
-            
-            # Use token management strategies for large transcripts
-            if transcript_tokens > 2500:                # Choose which approach to use based on configuration
-                token_management_approach = config.get("TOKEN_MANAGEMENT_APPROACH", "chunking")
+            # Use standard prompt formatting if no patient data
+            if "{transcription}" in final_prompt_template:
+                 prompt = final_prompt_template.format(transcription=sanitized_transcript)
+            else:
+                 prompt = f"{final_prompt_template}\n\n{sanitized_transcript}"
+
+        logger.debug(f"Final prompt for note generation (first 100 chars): {prompt[:100]}...")
+
+        # If provider resolved, delegate directly and return
+        if provider is not None:
+            try:
+                logger.info(f"Using LLMProviderFactory path for local model: {local_model}")
+                return await provider.generate_completion(prompt)
+            except Exception as e:
+                logger.error(f"LLMProviderFactory path failed, falling back to legacy: {e}", exc_info=True)
+
+        try:
+            if use_local:
+                # --- Use local LLM model API ---
+                # Get configuration from DI container
+                try:
+                    config_service = global_container.resolve(IConfigurationService)
+                    local_model_api_url = config_service.get("local_model_api_url", "http://localhost:8001/generate_note")
+                except Exception:
+                    local_model_api_url = "http://localhost:8001/generate_note"
                 
-                if token_management_approach == "chunking":
-                    logger.info(f"🧩 TOKEN MANAGEMENT: Using chunk processing for large transcript ({transcript_tokens} tokens)")
-                    # Use synchronous function with asyncio.to_thread
-                    note = await asyncio.to_thread(
-                        lambda: generate_note_from_chunked_transcript(
-                            transcript=sanitized_transcript,
-                            prompt_template=final_prompt_template,
-                            azure_endpoint=azure_endpoint,
-                            azure_api_key=api_key,
-                            deployment_name=azure_model_name,
-                            api_version=azure_api_version,
-                            model="gpt-4o"
-                        )
-                    )
-                    return note
+                logger.info(f"Entering legacy local model path. LOCAL_MODEL_API_URL: {local_model_api_url}")
+                if not local_model_api_url:
+                     logger.error("Local LLM API URL is not configured.")
+                     return "Error: Local LLM endpoint not configured."
+
+                request_payload = {"prompt": prompt}
+                if local_model:
+                    request_payload["model"] = local_model
+                    logger.info(f"Sending request to local LLM: {local_model} at {local_model_api_url}")
                 else:
-                    logger.info(f"📝 TOKEN MANAGEMENT: Using two-stage summarization for large transcript ({transcript_tokens} tokens)")
-                    # Use synchronous function with asyncio.to_thread
-                    note = await asyncio.to_thread(
-                        lambda: generate_note_with_two_stage_summarization(
-                            transcript=sanitized_transcript,
-                            prompt_template=final_prompt_template,
-                            azure_endpoint=azure_endpoint,
-                            azure_api_key=api_key,
-                            deployment_name=azure_model_name,
-                            api_version=azure_api_version,
-                            model="gpt-4o"
+                     logger.info(f"Sending request to local LLM at {local_model_api_url} (default model)")
+
+
+                try:
+                    # Use asyncio.to_thread for the blocking requests call
+                    response = await asyncio.to_thread(
+                        lambda: requests.post(
+                            local_model_api_url,
+                            json=request_payload,
+                            timeout=60 # Increased timeout for potentially slower local models
                         )
                     )
+                    response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+
+                    response_data = response.json()
+                    note = response_data.get("note", "")
+                    if not note:
+                         logger.warning("Local model returned an empty note.")
+                         return "Note generation result was empty."
+                    logger.info("Successfully received note from local LLM.")
                     return note
-            
-            # For smaller transcripts, use the standard approach
-            llm_factory = container.resolve(LLMProviderFactory)
-            provider = llm_factory.create(
-                "azure_openai",
-                api_key=api_key,
-                endpoint=azure_endpoint,
-                model_name=azure_model_name,
-                api_version=azure_api_version,
-            )
 
-            logger.info(
-                "Requesting note generation from Azure provider model: %s", azure_model_name
-            )
+                except requests.exceptions.Timeout:
+                    logger.error("Request to local LLM timed out.")
+                    return "Error: Request to local model timed out."
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Local LLM request failed: {e}")
+                    error_detail = str(e)
+                    try:
+                        # Try to get more detail from response if available
+                        error_detail = response.text
+                    except NameError: # response might not be defined if connection failed early
+                        pass
+                    return f"Error communicating with local model: {error_detail[:200]}" # Limit error length
 
-            note = await provider.generate_completion(prompt)
-            if not note:
-                 logger.warning("Azure OpenAI returned an empty note.")
-                 return "Note generation result was empty."
+            else:
+                # --- Use Azure OpenAI ---
+                if not api_key:
+                    logger.error("Azure API key is required but not provided for note generation.")
+                    return "Error: API key is required for Azure OpenAI."
+                # Check other required params passed down
+                if not azure_endpoint or not azure_api_version or not azure_model_name:
+                     logger.error("Azure endpoint, version, or model name missing for note generation.")
+                     return "Error: Azure configuration incomplete."
+                     
+                # Get token count for transcript to determine approach
+                transcript_tokens = count_tokens(sanitized_transcript, "gpt-4o")
+                logger.info(f"Transcript token count: {transcript_tokens}")
+                
+                # Use token management strategies for large transcripts
+                if transcript_tokens > 2500:                # Choose which approach to use based on configuration
+                    token_management_approach = config.get("TOKEN_MANAGEMENT_APPROACH", "chunking")
+                    
+                    if token_management_approach == "chunking":
+                        logger.info(f"🧩 TOKEN MANAGEMENT: Using chunk processing for large transcript ({transcript_tokens} tokens)")
+                        # Use synchronous function with asyncio.to_thread
+                        note = await asyncio.to_thread(
+                            lambda: generate_note_from_chunked_transcript(
+                                transcript=sanitized_transcript,
+                                prompt_template=final_prompt_template,
+                                azure_endpoint=azure_endpoint,
+                                azure_api_key=api_key,
+                                deployment_name=azure_model_name,
+                                api_version=azure_api_version,
+                                model="gpt-4o"
+                            )
+                        )
+                        return note
+                    else:
+                        logger.info(f"📝 TOKEN MANAGEMENT: Using two-stage summarization for large transcript ({transcript_tokens} tokens)")
+                        # Use synchronous function with asyncio.to_thread
+                        note = await asyncio.to_thread(
+                            lambda: generate_note_with_two_stage_summarization(
+                                transcript=sanitized_transcript,
+                                prompt_template=final_prompt_template,
+                                azure_endpoint=azure_endpoint,
+                                azure_api_key=api_key,
+                                deployment_name=azure_model_name,
+                                api_version=azure_api_version,
+                                model="gpt-4o"
+                            )
+                        )
+                        return note
+                
+                # For smaller transcripts, use the standard approach
+                llm_factory = container.resolve(LLMProviderFactory)
+                provider = llm_factory.create(
+                    "azure_openai",
+                    api_key=api_key,
+                    endpoint=azure_endpoint,
+                    model_name=azure_model_name,
+                    api_version=azure_api_version,
+                )
 
-            logger.info("Successfully received note from Azure provider.")
-            return note.strip()
+                logger.info(
+                    "Requesting note generation from Azure provider model: %s", azure_model_name
+                )
+
+                note = await provider.generate_completion(prompt)
+                if not note:
+                     logger.warning("Azure OpenAI returned an empty note.")
+                     return "Note generation result was empty."
+
+                logger.info("Successfully received note from Azure provider.")
+                return note.strip()
+
+        except ConfigurationError as e:
+            logger.error(f"Provider configuration error during note generation: {e}")
+            return f"Error generating note via provider: {e}"
+        except Exception as e:
+            logger.error(f"Unexpected error generating note: {e}")
+            return f"Error generating note: An unexpected error occurred."
 
     except ConfigurationError as e:
         logger.error(f"Provider configuration error during note generation: {e}")

@@ -11,12 +11,40 @@ NEW: optional on_chunk callback allows live ASR.
 
 from __future__ import annotations
 import datetime, threading, wave
+import logging
 from pathlib import Path
 from typing import List, Optional, Callable
 
 import pyaudio
 
-from ..config import config, logger          # repo-local imports
+from ..core.container import global_container
+from ..core.interfaces.config_service import IConfigurationService
+
+# Setup logging using the standard Python logging module
+logger = logging.getLogger("ambient_scribe")
+
+
+def _get_audio_config():
+    """Helper to get audio configuration from DI container with fallbacks."""
+    try:
+        config_service = global_container.resolve(IConfigurationService)
+        base_dir = config_service.get("base_dir", Path("./app_data"))
+        return {
+            "format_str": "paInt16",  # 16-bit PCM
+            "channels": 1,            # Mono
+            "rate": 16000,           # 16 kHz
+            "chunk": 1024,           # Default chunk size
+            "cache_dir": base_dir / "cache",
+        }
+    except Exception:
+        # Fallback values if DI not available
+        return {
+            "format_str": "paInt16",
+            "channels": 1,
+            "rate": 16000,
+            "chunk": 1024,
+            "cache_dir": Path("./app_data/cache"),
+        }
 
 
 class StreamRecorder:
@@ -35,13 +63,18 @@ class StreamRecorder:
     def start(self) -> None:
         if self._running:           # ignore double-starts
             return
+        
+        audio_config = _get_audio_config()
+        # Ensure cache directory exists
+        audio_config["cache_dir"].mkdir(parents=True, exist_ok=True)
+        
         self._audio  = pyaudio.PyAudio()
         self._stream = self._audio.open(
-            format=getattr(pyaudio, config["FORMAT_STR"]),
-            channels=config["CHANNELS"],
-            rate=config["RATE"],
+            format=getattr(pyaudio, audio_config["format_str"]),
+            channels=audio_config["channels"],
+            rate=audio_config["rate"],
             input=True,
-            frames_per_buffer=config["CHUNK"],
+            frames_per_buffer=audio_config["chunk"],
         )
         self._running = True
         self._paused  = False
@@ -69,13 +102,14 @@ class StreamRecorder:
         self._audio.terminate()
 
         # write WAV
-        out = (config["CACHE_DIR"] /
+        audio_config = _get_audio_config()
+        out = (audio_config["cache_dir"] /
                f"rec_{datetime.datetime.now():%Y%m%d_%H%M%S}.wav")
         with wave.open(str(out), "wb") as wf:
-            wf.setnchannels(config["CHANNELS"])
+            wf.setnchannels(audio_config["channels"])
             wf.setsampwidth(self._audio.get_sample_size(
-                getattr(pyaudio, config["FORMAT_STR"])))
-            wf.setframerate(config["RATE"])
+                getattr(pyaudio, audio_config["format_str"])))
+            wf.setframerate(audio_config["rate"])
             wf.writeframes(b"".join(self._frames))
 
         # reset all internal state
@@ -86,12 +120,13 @@ class StreamRecorder:
 
     # ── internal capture loop ──────────────────────────────────────────────
     def _loop(self) -> None:
+        audio_config = _get_audio_config()
         while self._running:
             if self._paused:
                 continue
             try:
                 data = self._stream.read(
-                    config["CHUNK"], exception_on_overflow=False)
+                    audio_config["chunk"], exception_on_overflow=False)
             except Exception as e:
                 logger.warning(f"Recorder read error: {e}")
                 continue
